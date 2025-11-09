@@ -19,6 +19,8 @@ python src/pipeline/run_full_pipeline.py \
     --input_repo QuangDuy/FineWiki-mds \
     --tokenizer_path /teamspace/studios/this_studio/data-processing/tokenizer/HUIT-BERT \
     --output_prefix QuangDuy/FineWiki-mds \
+    --batch_size_tokenize 10000 \
+    --batch_size_chunk 5000 \
     --hf_token $HF_TOKEN
 ```
 
@@ -43,6 +45,7 @@ python src/tokenization/tokenize_mds_subsets.py \
     --hf_repo QuangDuy/FineWiki-mds \
     --output_repo QuangDuy/FineWiki-mds-tokenized \
     --tokenizer_path /path/to/tokenizer \
+    --batch_size 40000 \
     --hf_token $HF_TOKEN
 ```
 
@@ -53,6 +56,7 @@ python src/sampling/chunk_tokenized_mds.py \
     --output_repo QuangDuy/FineWiki-mds-tokenized-1024 \
     --tokenizer_path /path/to/tokenizer \
     --chunk_size 1024 \
+    --batch_size 20000 \
     --hf_token $HF_TOKEN
 ```
 
@@ -64,14 +68,15 @@ python src/sampling/chunk_tokenized_mds.py \
     --tokenizer_path /path/to/tokenizer \
     --chunk_size 8192 \
     --always_skip_size 32 \
+    --batch_size 5000 \
     --hf_token $HF_TOKEN
 ```
 
 ## Key Features
 
 - Download & process MDS datasets from HuggingFace
-- Tokenize với HUIT-BERT tokenizer (output: uint16)
-- Chunk với backfill algorithm (no duplicates)
+- Tokenize with HUIT-BERT tokenizer (output: uint16)
+- Chunk with backfill algorithm (no duplicates)
 - Support 1K & 8K chunk sizes
 - Auto upload to HuggingFace
 - Resume capability
@@ -91,11 +96,56 @@ python src/sampling/chunk_tokenized_mds.py \
 pip install -r requirements.txt
 ```
 
+## Reading Chunk Samples
+
+Inspect and read samples from chunked datasets:
+
+### Read a few samples
+```bash
+python src/utils/read_chunk_samples.py \
+    --chunk_dir temp_chunking/chunked-1024 \
+    --num_samples 5
+```
+
+### Read with tokenizer to decode text
+```bash
+python src/utils/read_chunk_samples.py \
+    --chunk_dir temp_chunking/chunked-1024 \
+    --tokenizer_path tokenizer/HUIT-BERT \
+    --num_samples 10
+```
+
+### Read from specific subset
+```bash
+python src/utils/read_chunk_samples.py \
+    --chunk_dir temp_chunking/chunked-1024 \
+    --subset 000_00000 \
+    --num_samples 5
+```
+
+### Read all samples in a subset
+```bash
+python src/utils/read_chunk_samples.py \
+    --chunk_dir temp_chunking/chunked-1024 \
+    --subset 000_00000 \
+    --all
+```
+
+### Read all samples with tokenizer
+```bash
+python src/utils/read_chunk_samples.py \
+    --chunk_dir temp_chunking/chunked-1024 \
+    --tokenizer_path tokenizer/HUIT-BERT \
+    --all
+```
+
 ## File Structure
 
 ```
 src/
-├── utils/mds_helpers.py              # MDS utilities
+├── utils/
+│   ├── mds_helpers.py              # MDS utilities
+│   └── read_chunk_samples.py       # Read and inspect chunk samples
 ├── tokenization/tokenize_mds_subsets.py   # Tokenization
 ├── sampling/chunk_tokenized_mds.py   # Chunking
 └── pipeline/

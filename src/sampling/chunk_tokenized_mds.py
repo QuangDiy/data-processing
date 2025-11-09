@@ -39,7 +39,8 @@ from src.utils.mds_helpers import (
     save_mds_subset,
     download_from_hf,
     upload_to_hf,
-    verify_mds_structure
+    verify_mds_structure,
+    load_index_file
 )
 
 
@@ -62,10 +63,15 @@ def enforce_prefix_space(chunk: np.ndarray, tokenizer, chunk_size: int) -> np.nd
         Token array with proper prefix space
     """
     try:
+        max_tokens = chunk_size - 1
+        
         chunk_text = tokenizer.decode(chunk, skip_special_tokens=False)
         
         if chunk_text and chunk_text[0] == " ":
-            return chunk
+            if len(chunk) <= max_tokens:
+                return chunk
+            else:
+                return chunk[:max_tokens]
         
         new_tokens = tokenizer.encode(
             chunk_text,
@@ -75,14 +81,18 @@ def enforce_prefix_space(chunk: np.ndarray, tokenizer, chunk_size: int) -> np.nd
         )
         new_tokens = np.array(new_tokens, dtype=np.uint16)
         
-        if len(new_tokens) <= chunk_size:
+        if len(new_tokens) <= max_tokens:
             return new_tokens
         else:
-            return new_tokens[:chunk_size]
+            return new_tokens[:max_tokens]
             
     except Exception as e:
         print(f"Warning: Could not enforce prefix space: {e}")
-        return chunk
+        max_tokens = chunk_size - 1
+        if len(chunk) <= max_tokens:
+            return chunk
+        else:
+            return chunk[:max_tokens]
 
 
 def add_special_tokens(
@@ -266,6 +276,27 @@ def chunk_instance(
     return chunks, amount_duplicated, amount_skipped
 
 
+def count_subset_samples(subset_path: Path) -> int:
+    """
+    Count total samples in a subset.
+    
+    Args:
+        subset_path: Path to subset folder
+        
+    Returns:
+        Total number of samples
+    """
+    try:
+        index_file = subset_path / "index.json"
+        index_data = load_index_file(index_file)
+        total = 0
+        for shard in index_data.get('shards', []):
+            total += shard.get('samples', 0)
+        return total
+    except Exception:
+        return 0
+
+
 def chunk_subset(
     subset_path: Path,
     output_path: Path,
@@ -312,7 +343,9 @@ def chunk_subset(
             print(f"  Skipping {subset_path.name} (already exists)")
             return {'skipped': True}
     
-    print(f"  Chunking {subset_path.name}...")
+    total_samples_in_subset = count_subset_samples(subset_path)
+    
+    print(f"  Chunking {subset_path.name} ({total_samples_in_subset:,} samples)...")
     
     stats = {
         'total_duplicated_tokens': 0,
@@ -325,6 +358,14 @@ def chunk_subset(
     }
     
     random_generator = random.Random(seed)
+    
+    pbar = tqdm(
+        total=total_samples_in_subset,
+        desc=f"    Processing {subset_path.name}",
+        unit="samples",
+        leave=False,
+        ncols=100
+    )
     
     def chunked_samples_generator():
         """Generator that yields chunked samples."""
@@ -357,6 +398,8 @@ def chunk_subset(
                 stats['total_tokens_skipped'] += skipped
                 stats['total_input_samples'] += 1
                 
+                pbar.update(1)
+                
                 for chunk in chunks:
                     chunk_len = len(chunk)
                     stats['total_tokens_written'] += chunk_len
@@ -377,6 +420,8 @@ def chunk_subset(
         compression=compression
     )
     
+    pbar.close()
+    
     if stats['distribution']:
         distribution = sorted(stats['distribution'])
         percentiles = {}
@@ -395,7 +440,8 @@ def chunk_subset(
         save_stats = {k: v for k, v in stats.items() if k != 'distribution'}
         json.dump(save_stats, f, indent=2)
     
-    print(f"Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks")
+    print(f"Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks "
+          f"(duplicated: {stats['total_duplicated_tokens']:,}, skipped: {stats['total_tokens_skipped']:,})")
     
     return stats
 
@@ -498,8 +544,11 @@ def chunk_dataset(
         }
     }
     
-    for subset_folder in tqdm(subset_folders, desc="Processing subsets"):
+    subset_pbar = tqdm(subset_folders, desc="Processing subsets", unit="subset")
+    
+    for subset_folder in subset_pbar:
         subset_name = subset_folder.name
+        subset_pbar.set_postfix_str(f"Current: {subset_name}")
         output_subset = output_path / subset_name
         
         try:
