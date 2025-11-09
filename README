@@ -1,0 +1,104 @@
+# MDS Tokenization & Chunking Pipeline
+
+Pipeline processing MDS dataset from HuggingFace: **Tokenization → Chunking → Upload**
+
+## Quick Start
+
+### 1. Test Pipeline (Recommended First)
+
+```bash
+python src/pipeline/test_pipeline.py
+```
+
+### 2. Run Full Pipeline
+
+```bash
+export HF_TOKEN="your_token_here"
+
+python src/pipeline/run_full_pipeline.py \
+    --input_repo QuangDuy/FineWiki-mds \
+    --tokenizer_path /teamspace/studios/this_studio/data-processing/tokenizer/HUIT-BERT \
+    --output_prefix QuangDuy/FineWiki-mds \
+    --hf_token $HF_TOKEN
+```
+
+**Output:**
+- `QuangDuy/FineWiki-mds-tokenized` (tokenized data)
+- `QuangDuy/FineWiki-mds-tokenized-1024` (1K chunks)
+- `QuangDuy/FineWiki-mds-tokenized-8192` (8K chunks)
+
+## Pipeline Flow
+
+```
+Raw MDS (HF) → Tokenization (HUIT-BERT) → Tokenized MDS
+                                              ├→ Chunking 1K → Chunked 1024
+                                              └→ Chunking 8K → Chunked 8192
+```
+
+## Individual Stages
+
+### Tokenization Only
+```bash
+python src/tokenization/tokenize_mds_subsets.py \
+    --hf_repo QuangDuy/FineWiki-mds \
+    --output_repo QuangDuy/FineWiki-mds-tokenized \
+    --tokenizer_path /path/to/tokenizer \
+    --hf_token $HF_TOKEN
+```
+
+### Chunking Only (1K)
+```bash
+python src/sampling/chunk_tokenized_mds.py \
+    --hf_repo QuangDuy/FineWiki-mds-tokenized \
+    --output_repo QuangDuy/FineWiki-mds-tokenized-1024 \
+    --tokenizer_path /path/to/tokenizer \
+    --chunk_size 1024 \
+    --hf_token $HF_TOKEN
+```
+
+### Chunking Only (8K)
+```bash
+python src/sampling/chunk_tokenized_mds.py \
+    --hf_repo QuangDuy/FineWiki-mds-tokenized \
+    --output_repo QuangDuy/FineWiki-mds-tokenized-8192 \
+    --tokenizer_path /path/to/tokenizer \
+    --chunk_size 8192 \
+    --always_skip_size 32 \
+    --hf_token $HF_TOKEN
+```
+
+## Key Features
+
+- Download & process MDS datasets from HuggingFace
+- Tokenize với HUIT-BERT tokenizer (output: uint16)
+- Chunk với backfill algorithm (no duplicates)
+- Support 1K & 8K chunk sizes
+- Auto upload to HuggingFace
+- Resume capability
+- Statistics tracking
+- Preserve subset structure (XXX_XXXXX folders)
+
+## Configuration Presets
+
+| Config | Chunk Size | Min Size | Skip Size | Use Case |
+|--------|-----------|----------|-----------|----------|
+| 1K     | 1024      | 512      | 128       | Stage 1 |
+| 8K     | 8192      | 512      | 32        | Stage 2 |
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+## File Structure
+
+```
+src/
+├── utils/mds_helpers.py              # MDS utilities
+├── tokenization/tokenize_mds_subsets.py   # Tokenization
+├── sampling/chunk_tokenized_mds.py   # Chunking
+└── pipeline/
+    ├── run_full_pipeline.py          # Full pipeline
+    └── test_pipeline.py              # Test suite
+```
