@@ -40,7 +40,8 @@ from src.utils.mds_helpers import (
     upload_to_hf,
     get_tokenizer_special_tokens,
     verify_mds_structure,
-    count_total_samples
+    count_total_samples,
+    load_index_file
 )
 
 
@@ -49,6 +50,27 @@ MDS_COLS_PRE_TOKENIZED = {
     'id': 'str',
     'len': 'int'
 }
+
+
+def count_subset_samples(subset_path: Path) -> int:
+    """
+    Count total samples in a subset.
+    
+    Args:
+        subset_path: Path to subset folder
+        
+    Returns:
+        Total number of samples
+    """
+    try:
+        index_file = subset_path / "index.json"
+        index_data = load_index_file(index_file)
+        total = 0
+        for shard in index_data.get('shards', []):
+            total += shard.get('samples', 0)
+        return total
+    except Exception:
+        return 0
 
 
 def tokenize_subset(
@@ -79,13 +101,23 @@ def tokenize_subset(
             print(f"  Skipping {subset_path.name} (already exists)")
             return {'skipped': True}
     
-    print(f"  Tokenizing {subset_path.name}...")
+    total_samples_in_subset = count_subset_samples(subset_path)
+    
+    print(f"  Tokenizing {subset_path.name} ({total_samples_in_subset:,} samples)...")
     
     stats = {
         'num_tokens': 0,
         'num_samples': 0,
         'skipped': False
     }
+    
+    pbar = tqdm(
+        total=total_samples_in_subset,
+        desc=f"    Processing {subset_path.name}",
+        unit="samples",
+        leave=False,
+        ncols=100
+    )
     
     def tokenized_samples_generator():
         """Generator that yields tokenized samples."""
@@ -114,6 +146,8 @@ def tokenize_subset(
                 
                 stats['num_tokens'] += seq_len
                 stats['num_samples'] += 1
+                
+                pbar.update(1)
             
             del texts, ids, tokenized
             gc.collect()
@@ -125,6 +159,8 @@ def tokenize_subset(
         compression=compression
     )
     
+    pbar.close()
+    
     stats['output_samples'] = total_samples
     stats['output_size'] = total_size
     
@@ -132,7 +168,7 @@ def tokenize_subset(
     with open(stats_file, 'w') as f:
         json.dump(stats, f, indent=2)
     
-    print(f"Tokenized {stats['num_samples']:,} samples, {stats['num_tokens']:,} tokens")
+    print(f"    ✓ Tokenized {stats['num_samples']:,} samples, {stats['num_tokens']:,} tokens")
     
     return stats
 
@@ -199,8 +235,11 @@ def tokenize_dataset(
         'subset_stats': {}
     }
     
-    for subset_folder in tqdm(subset_folders, desc="Processing subsets"):
+    subset_pbar = tqdm(subset_folders, desc="Processing subsets", unit="subset")
+    
+    for subset_folder in subset_pbar:
         subset_name = subset_folder.name
+        subset_pbar.set_postfix_str(f"Current: {subset_name}")
         output_subset = output_path / subset_name
         
         try:
