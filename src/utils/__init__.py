@@ -10,7 +10,12 @@ from .mds_helpers import (
     upload_to_hf,
     download_from_hf,
     get_tokenizer_special_tokens,
-    count_total_samples
+    count_total_samples,
+    get_resume_state_path,
+    save_resume_state,
+    load_resume_state,
+    clear_resume_state,
+    check_resume_status
 )
 
 __all__ = [
@@ -23,6 +28,11 @@ __all__ = [
     'upload_to_hf',
     'download_from_hf',
     'get_tokenizer_special_tokens',
-    'count_total_samples'
+    'count_total_samples',
+    'get_resume_state_path',
+    'save_resume_state',
+    'load_resume_state',
+    'clear_resume_state',
+    'check_resume_status'
 ]
 

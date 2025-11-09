@@ -334,3 +334,116 @@ def count_total_samples(dataset_path: Path) -> int:
     
     return total
 
+
+def get_resume_state_path(output_path: Path) -> Path:
+    """
+    Get the path to the resume state file for a subset.
+    
+    Args:
+        output_path: Path to output subset folder
+        
+    Returns:
+        Path to .resume_state.json file
+    """
+    return output_path / ".resume_state.json"
+
+
+def save_resume_state(output_path: Path, samples_processed: int, total_samples: int):
+    """
+    Save resume state for a subset being processed.
+    
+    Args:
+        output_path: Path to output subset folder
+        samples_processed: Number of samples processed so far
+        total_samples: Total samples expected in this subset
+    """
+    output_path.mkdir(parents=True, exist_ok=True)
+    state_file = get_resume_state_path(output_path)
+    
+    state = {
+        'samples_processed': samples_processed,
+        'total_samples': total_samples,
+        'timestamp': str(Path.cwd())  # Just a placeholder for state validity
+    }
+    
+    with open(state_file, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
+def load_resume_state(output_path: Path) -> Optional[Dict]:
+    """
+    Load resume state for a subset.
+    
+    Args:
+        output_path: Path to output subset folder
+        
+    Returns:
+        Resume state dictionary or None if no valid state exists
+    """
+    state_file = get_resume_state_path(output_path)
+    
+    if not state_file.exists():
+        return None
+    
+    try:
+        with open(state_file, 'r') as f:
+            state = json.load(f)
+        
+        # Validate state has required fields
+        if 'samples_processed' in state and 'total_samples' in state:
+            return state
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"Warning: Could not load resume state: {e}")
+        return None
+
+
+def clear_resume_state(output_path: Path):
+    """
+    Clear resume state after successful completion.
+    
+    Args:
+        output_path: Path to output subset folder
+    """
+    state_file = get_resume_state_path(output_path)
+    
+    if state_file.exists():
+        try:
+            state_file.unlink()
+        except Exception as e:
+            print(f"Warning: Could not delete resume state file: {e}")
+
+
+def check_resume_status(output_path: Path, input_total_samples: int) -> Tuple[bool, int, str]:
+    """
+    Check if a subset can be resumed and get status information.
+    
+    Args:
+        output_path: Path to output subset folder
+        input_total_samples: Total samples in input
+        
+    Returns:
+        Tuple of (can_resume, samples_to_skip, status_message)
+    """
+    if output_path.exists():
+        stats_files = [
+            output_path / "tokenization_stats.json",
+            output_path / "chunking_stats.json"
+        ]
+        
+        for stats_file in stats_files:
+            if stats_file.exists():
+                return False, 0, "complete"
+        
+        state = load_resume_state(output_path)
+        if state and state['samples_processed'] > 0:
+            samples_processed = state['samples_processed']
+            if samples_processed < input_total_samples:
+                return True, samples_processed, f"resumable (processed {samples_processed}/{input_total_samples})"
+            else:
+                return False, 0, "possibly_corrupt"
+    
+    return False, 0, "new"
+

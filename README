@@ -46,6 +46,7 @@ python src/tokenization/tokenize_mds_subsets.py \
     --output_repo QuangDuy/FineWiki-mds-tokenized \
     --tokenizer_path /path/to/tokenizer \
     --batch_size 40000 \
+    --resume \
     --hf_token $HF_TOKEN
 ```
 
@@ -57,6 +58,7 @@ python src/sampling/chunk_tokenized_mds.py \
     --tokenizer_path /path/to/tokenizer \
     --chunk_size 1024 \
     --batch_size 20000 \
+    --resume \
     --hf_token $HF_TOKEN
 ```
 
@@ -69,6 +71,7 @@ python src/sampling/chunk_tokenized_mds.py \
     --chunk_size 8192 \
     --always_skip_size 32 \
     --batch_size 5000 \
+    --resume \
     --hf_token $HF_TOKEN
 ```
 
@@ -79,7 +82,7 @@ python src/sampling/chunk_tokenized_mds.py \
 - Chunk with backfill algorithm (no duplicates)
 - Support 1K & 8K chunk sizes
 - Auto upload to HuggingFace
-- Resume capability
+- **Robust resume capability** (sample-level tracking with automatic recovery)
 - Statistics tracking
 - Preserve subset structure (XXX_XXXXX folders)
 
@@ -89,6 +92,58 @@ python src/sampling/chunk_tokenized_mds.py \
 |--------|-----------|----------|-----------|----------|
 | 1K     | 1024      | 512      | 128       | Stage 1 |
 | 8K     | 8192      | 512      | 32        | Stage 2 |
+
+## Resume Capability
+
+The pipeline now includes **robust resume capability** that tracks processing at the sample level, allowing interrupted jobs to continue seamlessly without restarting entire subsets.
+
+### How It Works
+
+- **Sample-level tracking**: Saves progress every 500-1000 samples
+- **Automatic detection**: Detects complete, partial, or corrupted subsets
+- **Clear feedback**: Shows exactly what's being resumed vs. processed fresh
+- **Smart recovery**: Skips already-processed samples efficiently
+
+### Using Resume Mode
+
+Add the `--resume` flag to any tokenization or chunking command:
+
+#### Resume Tokenization
+```bash
+python src/tokenization/tokenize_mds_subsets.py \
+    --hf_repo QuangDuy/FineWiki-mds \
+    --output_repo QuangDuy/FineWiki-mds-tokenized \
+    --tokenizer_path tokenizer/HUIT-BERT \
+    --batch_size 40000 \
+    --resume \
+    --hf_token $HF_TOKEN
+```
+
+#### Resume Chunking
+```bash
+python src/sampling/chunk_tokenized_mds.py \
+    --hf_repo QuangDuy/FineWiki-mds-tokenized \
+    --output_repo QuangDuy/FineWiki-mds-tokenized-1024 \
+    --tokenizer_path tokenizer/HUIT-BERT \
+    --chunk_size 1024 \
+    --batch_size 20000 \
+    --resume \
+    --hf_token $HF_TOKEN
+```
+
+### When to Use Resume
+
+- **Long-running jobs**: Multi-hour processing that might be interrupted
+- **Unstable connections**: When downloading/uploading to HuggingFace
+- **Resource constraints**: If job might be killed due to memory/time limits
+- **Iterative development**: Testing pipeline changes without full reprocessing
+
+### Technical Details
+
+- Resume state stored in `.resume_state.json` files per subset
+- Automatically cleaned up on successful completion
+- Compatible with both local and HuggingFace workflows
+- No performance penalty when not using resume mode
 
 ## Installation
 

@@ -40,7 +40,11 @@ from src.utils.mds_helpers import (
     download_from_hf,
     upload_to_hf,
     verify_mds_structure,
-    load_index_file
+    load_index_file,
+    save_resume_state,
+    load_resume_state,
+    clear_resume_state,
+    check_resume_status
 )
 
 
@@ -315,7 +319,7 @@ def chunk_subset(
     seed: int = 42
 ) -> Dict:
     """
-    Chunk a single subset folder.
+    Chunk a single subset folder with robust resume capability.
     
     Args:
         subset_path: Path to input tokenized subset folder
@@ -331,21 +335,30 @@ def chunk_subset(
         tokenizer: HuggingFace tokenizer
         batch_size: Batch size for processing
         compression: Compression type
-        resume: Whether to skip if output exists
+        resume: Whether to resume from existing partial output
         seed: Random seed for reproducibility
         
     Returns:
         Statistics dictionary
     """
-    if resume and output_path.exists():
-        stats_file = output_path / "chunking_stats.json"
-        if stats_file.exists():
-            print(f"  Skipping {subset_path.name} (already exists)")
-            return {'skipped': True}
-    
     total_samples_in_subset = count_subset_samples(subset_path)
     
-    print(f"  Chunking {subset_path.name} ({total_samples_in_subset:,} samples)...")
+    can_resume, samples_to_skip, status_msg = check_resume_status(output_path, total_samples_in_subset)
+    
+    if status_msg == "complete" and resume:
+        print(f"  Skipping {subset_path.name} (already complete)")
+        return {'skipped': True, 'reason': 'complete'}
+    
+    if can_resume and resume:
+        print(f"  Resuming {subset_path.name}: {samples_to_skip:,}/{total_samples_in_subset:,} samples already processed")
+        samples_remaining = total_samples_in_subset - samples_to_skip
+    else:
+        if status_msg == "possibly_corrupt":
+            print(f"  Restarting {subset_path.name} (previous run possibly incomplete)")
+        else:
+            print(f"  Starting {subset_path.name} ({total_samples_in_subset:,} samples)...")
+        samples_to_skip = 0
+        samples_remaining = total_samples_in_subset
     
     stats = {
         'total_duplicated_tokens': 0,
@@ -354,27 +367,38 @@ def chunk_subset(
         'total_input_samples': 0,
         'total_output_chunks': 0,
         'distribution': [],
-        'skipped': False
+        'skipped': False,
+        'resumed_from': samples_to_skip
     }
     
     random_generator = random.Random(seed)
     
     pbar = tqdm(
-        total=total_samples_in_subset,
+        total=samples_remaining,
         desc=f"    Processing {subset_path.name}",
         unit="samples",
         leave=False,
-        ncols=100
+        ncols=100,
+        initial=0
     )
     
+    samples_processed_count = 0
+    
     def chunked_samples_generator():
-        """Generator that yields chunked samples."""
-        nonlocal stats
+        """Generator that yields chunked samples, skipping already processed ones."""
+        nonlocal stats, samples_processed_count
+        
+        sample_idx = 0
         
         for batch in load_mds_subset(subset_path, batch_size=batch_size):
-            processed_chunks = []
             
             for sample in batch:
+                if sample_idx < samples_to_skip:
+                    sample_idx += 1
+                    continue
+                
+                sample_idx += 1
+                
                 input_ids = sample['input_ids']
                 
                 if not isinstance(input_ids, np.ndarray):
@@ -397,8 +421,16 @@ def chunk_subset(
                 stats['total_duplicated_tokens'] += duplicated
                 stats['total_tokens_skipped'] += skipped
                 stats['total_input_samples'] += 1
+                samples_processed_count += 1
                 
                 pbar.update(1)
+                
+                if samples_processed_count % 500 == 0:
+                    save_resume_state(
+                        output_path,
+                        samples_to_skip + samples_processed_count,
+                        total_samples_in_subset
+                    )
                 
                 for chunk in chunks:
                     chunk_len = len(chunk)
@@ -440,7 +472,9 @@ def chunk_subset(
         save_stats = {k: v for k, v in stats.items() if k != 'distribution'}
         json.dump(save_stats, f, indent=2)
     
-    print(f"Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks "
+    clear_resume_state(output_path)
+    
+    print(f"    ✓ Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks "
           f"(duplicated: {stats['total_duplicated_tokens']:,}, skipped: {stats['total_tokens_skipped']:,})")
     
     return stats
@@ -493,6 +527,7 @@ def chunk_dataset(
     print(f"Backfill: {backfill}")
     print(f"Backfill no duplicates: {backfill_no_duplicates}")
     print(f"Add EOS token: {add_eos_token}")
+    print(f"Resume mode: {'Enabled' if resume else 'Disabled'}")
     print()
     
     print("Loading tokenizer...")
@@ -522,6 +557,26 @@ def chunk_dataset(
         raise ValueError(f"No subset folders found in {input_path}")
     
     print(f"Found {len(subset_folders)} subset folders")
+    
+    if resume:
+        complete_count = 0
+        resumable_count = 0
+        new_count = 0
+        
+        for subset_folder in subset_folders:
+            output_subset = output_path / subset_folder.name
+            total_samples = count_subset_samples(subset_folder)
+            can_resume, samples_to_skip, status_msg = check_resume_status(output_subset, total_samples)
+            
+            if status_msg == "complete":
+                complete_count += 1
+            elif can_resume:
+                resumable_count += 1
+            else:
+                new_count += 1
+        
+        print(f"Resume summary: {complete_count} complete, {resumable_count} resumable, {new_count} new")
+    
     print()
     
     output_path.mkdir(parents=True, exist_ok=True)

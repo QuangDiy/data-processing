@@ -41,7 +41,11 @@ from src.utils.mds_helpers import (
     get_tokenizer_special_tokens,
     verify_mds_structure,
     count_total_samples,
-    load_index_file
+    load_index_file,
+    save_resume_state,
+    load_resume_state,
+    clear_resume_state,
+    check_resume_status
 )
 
 
@@ -82,7 +86,7 @@ def tokenize_subset(
     resume: bool = False
 ) -> Dict:
     """
-    Tokenize a single subset folder.
+    Tokenize a single subset folder with robust resume capability.
     
     Args:
         subset_path: Path to input subset folder
@@ -90,42 +94,69 @@ def tokenize_subset(
         tokenizer: HuggingFace tokenizer
         batch_size: Number of samples to process at once
         compression: Compression type for MDS
-        resume: Whether to skip if output already exists
+        resume: Whether to resume from existing partial output
         
     Returns:
         Statistics dictionary
     """
-    if resume and output_path.exists():
-        index_file = output_path / "index.json"
-        if index_file.exists():
-            print(f"  Skipping {subset_path.name} (already exists)")
-            return {'skipped': True}
-    
     total_samples_in_subset = count_subset_samples(subset_path)
     
-    print(f"  Tokenizing {subset_path.name} ({total_samples_in_subset:,} samples)...")
+    can_resume, samples_to_skip, status_msg = check_resume_status(output_path, total_samples_in_subset)
+    
+    if status_msg == "complete" and resume:
+        print(f"  Skipping {subset_path.name} (already complete)")
+        return {'skipped': True, 'reason': 'complete'}
+    
+    if can_resume and resume:
+        print(f"  Resuming {subset_path.name}: {samples_to_skip:,}/{total_samples_in_subset:,} samples already processed")
+        samples_remaining = total_samples_in_subset - samples_to_skip
+    else:
+        if status_msg == "possibly_corrupt":
+            print(f"  Restarting {subset_path.name} (previous run possibly incomplete)")
+        else:
+            print(f"  Starting {subset_path.name} ({total_samples_in_subset:,} samples)...")
+        samples_to_skip = 0
+        samples_remaining = total_samples_in_subset
     
     stats = {
         'num_tokens': 0,
         'num_samples': 0,
-        'skipped': False
+        'skipped': False,
+        'resumed_from': samples_to_skip
     }
     
     pbar = tqdm(
-        total=total_samples_in_subset,
+        total=samples_remaining,
         desc=f"    Processing {subset_path.name}",
         unit="samples",
         leave=False,
-        ncols=100
+        ncols=100,
+        initial=0
     )
     
+    samples_processed_count = 0
+    
     def tokenized_samples_generator():
-        """Generator that yields tokenized samples."""
-        nonlocal stats
+        """Generator that yields tokenized samples, skipping already processed ones."""
+        nonlocal stats, samples_processed_count
+        
+        sample_idx = 0
         
         for batch in load_mds_subset(subset_path, batch_size=batch_size):
-            texts = [sample['text'] for sample in batch]
-            ids = [sample['id'] for sample in batch]
+            texts = []
+            ids = []
+            
+            for sample in batch:
+                if sample_idx < samples_to_skip:
+                    sample_idx += 1
+                    continue
+                
+                texts.append(sample['text'])
+                ids.append(sample['id'])
+                sample_idx += 1
+            
+            if not texts:
+                continue
             
             tokenized = tokenizer(
                 texts,
@@ -146,8 +177,16 @@ def tokenize_subset(
                 
                 stats['num_tokens'] += seq_len
                 stats['num_samples'] += 1
+                samples_processed_count += 1
                 
                 pbar.update(1)
+                
+                if samples_processed_count % 1000 == 0:
+                    save_resume_state(
+                        output_path,
+                        samples_to_skip + samples_processed_count,
+                        total_samples_in_subset
+                    )
             
             del texts, ids, tokenized
             gc.collect()
@@ -168,7 +207,9 @@ def tokenize_subset(
     with open(stats_file, 'w') as f:
         json.dump(stats, f, indent=2)
     
-    print(f"    ✓ Tokenized {stats['num_samples']:,} samples, {stats['num_tokens']:,} tokens")
+    clear_resume_state(output_path)
+    
+    print(f"    Tokenized {stats['num_samples']:,} samples, {stats['num_tokens']:,} tokens")
     
     return stats
 
@@ -202,6 +243,7 @@ def tokenize_dataset(
     print(f"Output: {output_path}")
     print(f"Tokenizer: {tokenizer_path}")
     print(f"Batch size: {batch_size}")
+    print(f"Resume mode: {'Enabled' if resume else 'Disabled'}")
     print()
     
     print("Loading tokenizer...")
@@ -225,6 +267,26 @@ def tokenize_dataset(
         raise ValueError(f"No subset folders found in {input_path}")
     
     print(f"Found {len(subset_folders)} subset folders")
+    
+    if resume:
+        complete_count = 0
+        resumable_count = 0
+        new_count = 0
+        
+        for subset_folder in subset_folders:
+            output_subset = output_path / subset_folder.name
+            total_samples = count_subset_samples(subset_folder)
+            can_resume, samples_to_skip, status_msg = check_resume_status(output_subset, total_samples)
+            
+            if status_msg == "complete":
+                complete_count += 1
+            elif can_resume:
+                resumable_count += 1
+            else:
+                new_count += 1
+        
+        print(f"Resume summary: {complete_count} complete, {resumable_count} resumable, {new_count} new")
+    
     print()
     
     output_path.mkdir(parents=True, exist_ok=True)
