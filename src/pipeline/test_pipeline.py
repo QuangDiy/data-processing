@@ -75,7 +75,7 @@ def create_test_mds_dataset(output_path: Path, num_subsets: int = 2, samples_per
     return output_path
 
 
-def test_tokenization(input_path: Path, tokenizer_path: str, output_path: Path):
+def test_tokenization(input_path: Path, tokenizer_path: str, output_path: Path, num_workers: int = None):
     """
     Test the tokenization script.
     
@@ -83,9 +83,11 @@ def test_tokenization(input_path: Path, tokenizer_path: str, output_path: Path):
         input_path: Path to test MDS dataset
         tokenizer_path: Path to tokenizer
         output_path: Path for tokenized output
+        num_workers: Number of parallel workers (None for auto-detect)
     """
+    worker_desc = f" (num_workers={num_workers})" if num_workers is not None else " (auto-detect workers)"
     print("\n" + "="*60)
-    print("Testing Tokenization")
+    print(f"Testing Tokenization{worker_desc}")
     print("="*60)
     
     from src.tokenization.tokenize_mds_subsets import tokenize_dataset
@@ -97,7 +99,8 @@ def test_tokenization(input_path: Path, tokenizer_path: str, output_path: Path):
             tokenizer_path=tokenizer_path,
             batch_size=50,
             compression='zstd',
-            resume=False
+            resume=False,
+            num_workers=num_workers
         )
         
         print(f"Tokenization successful")
@@ -124,7 +127,7 @@ def test_tokenization(input_path: Path, tokenizer_path: str, output_path: Path):
         return False
 
 
-def test_chunking(input_path: Path, tokenizer_path: str, output_path: Path, chunk_size: int):
+def test_chunking(input_path: Path, tokenizer_path: str, output_path: Path, chunk_size: int, num_workers: int = None):
     """
     Test the chunking script.
     
@@ -133,9 +136,11 @@ def test_chunking(input_path: Path, tokenizer_path: str, output_path: Path, chun
         tokenizer_path: Path to tokenizer
         output_path: Path for chunked output
         chunk_size: Chunk size to use
+        num_workers: Number of parallel workers (None for auto-detect)
     """
+    worker_desc = f" (num_workers={num_workers})" if num_workers is not None else " (auto-detect workers)"
     print("\n" + "="*60)
-    print(f"Testing Chunking (chunk_size={chunk_size})")
+    print(f"Testing Chunking (chunk_size={chunk_size}){worker_desc}")
     print("="*60)
     
     from src.sampling.chunk_tokenized_mds import chunk_dataset
@@ -161,7 +166,8 @@ def test_chunking(input_path: Path, tokenizer_path: str, output_path: Path, chun
             batch_size=50,
             compression='zstd',
             resume=False,
-            seed=42
+            seed=42,
+            num_workers=num_workers
         )
         
         print(f"Chunking successful")
@@ -207,24 +213,24 @@ def main():
     
     try:
         test_raw_path = temp_dir / "test_raw"
-        create_test_mds_dataset(test_raw_path, num_subsets=2, samples_per_subset=50)
+        create_test_mds_dataset(test_raw_path, num_subsets=4, samples_per_subset=50)
         
         test_tokenized_path = temp_dir / "test_tokenized"
-        tokenize_success = test_tokenization(test_raw_path, tokenizer_path, test_tokenized_path)
+        tokenize_success = test_tokenization(test_raw_path, tokenizer_path, test_tokenized_path, num_workers=2)
         
         if not tokenize_success:
             print("\nPipeline test failed at tokenization stage")
             return 1
         
         test_chunked_1k_path = temp_dir / "test_chunked_1k"
-        chunk_1k_success = test_chunking(test_tokenized_path, tokenizer_path, test_chunked_1k_path, 1024)
+        chunk_1k_success = test_chunking(test_tokenized_path, tokenizer_path, test_chunked_1k_path, 1024, num_workers=2)
         
         if not chunk_1k_success:
             print("\nPipeline test failed at 1K chunking stage")
             return 1
         
         test_chunked_8k_path = temp_dir / "test_chunked_8k"
-        chunk_8k_success = test_chunking(test_tokenized_path, tokenizer_path, test_chunked_8k_path, 8192)
+        chunk_8k_success = test_chunking(test_tokenized_path, tokenizer_path, test_chunked_8k_path, 8192, num_workers=1)
         
         if not chunk_8k_success:
             print("\nPipeline test failed at 8K chunking stage")

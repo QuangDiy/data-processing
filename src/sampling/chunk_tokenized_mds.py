@@ -26,6 +26,7 @@ import gc
 import json
 import random
 import sys
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import numpy as np
@@ -321,7 +322,8 @@ def chunk_subset(
     batch_size: int = 1000,
     compression: str = 'zstd',
     resume: bool = False,
-    seed: int = 42
+    seed: int = 42,
+    show_progress: bool = True
 ) -> Dict:
     """
     Chunk a single subset folder with robust resume capability.
@@ -378,14 +380,17 @@ def chunk_subset(
     
     random_generator = random.Random(seed)
     
-    pbar = tqdm(
-        total=samples_remaining,
-        desc=f"    Processing {subset_path.name}",
-        unit="samples",
-        leave=False,
-        ncols=100,
-        initial=0
-    )
+    if show_progress:
+        pbar = tqdm(
+            total=samples_remaining,
+            desc=f"    Processing {subset_path.name}",
+            unit="samples",
+            leave=False,
+            ncols=100,
+            initial=0
+        )
+    else:
+        pbar = None
     
     samples_processed_count = 0
     
@@ -428,7 +433,8 @@ def chunk_subset(
                 stats['total_input_samples'] += 1
                 samples_processed_count += 1
                 
-                pbar.update(1)
+                if pbar:
+                    pbar.update(1)
                 
                 if samples_processed_count % 500 == 0:
                     save_resume_state(
@@ -457,7 +463,8 @@ def chunk_subset(
         compression=compression
     )
     
-    pbar.close()
+    if pbar:
+        pbar.close()
     
     if stats['distribution']:
         distribution = sorted(stats['distribution'])
@@ -485,6 +492,53 @@ def chunk_subset(
     return stats
 
 
+def chunk_subset_worker(args: Tuple) -> Tuple[str, Dict]:
+    """
+    Worker function for parallel subset processing.
+    
+    Args:
+        args: Tuple containing all arguments for chunk_subset
+        
+    Returns:
+        Tuple of (subset_name, stats_dict)
+    """
+    (subset_path, output_path, tokenizer_path, chunk_size, min_chunk_size,
+     always_skip_size, backfill, backfill_no_duplicates, add_eos_token,
+     bos_token, eos_token, batch_size, compression, resume, seed) = args
+    
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path,
+            add_prefix_space=True,
+            trust_remote_code=True
+        )
+    except Exception as e:
+        return (subset_path.name, {'error': f"Failed to load tokenizer: {e}"})
+    
+    try:
+        stats = chunk_subset(
+            subset_path=subset_path,
+            output_path=output_path,
+            chunk_size=chunk_size,
+            min_chunk_size=min_chunk_size,
+            always_skip_size=always_skip_size,
+            backfill=backfill,
+            backfill_no_duplicates=backfill_no_duplicates,
+            add_eos_token=add_eos_token,
+            bos_token=bos_token,
+            eos_token=eos_token,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            compression=compression,
+            resume=resume,
+            seed=seed,
+            show_progress=False  # Disable inner progress bar for parallel processing
+        )
+        return (subset_path.name, stats)
+    except Exception as e:
+        return (subset_path.name, {'error': str(e)})
+
+
 def chunk_dataset(
     input_path: Path,
     output_path: Path,
@@ -498,7 +552,8 @@ def chunk_dataset(
     batch_size: int = 1000,
     compression: str = 'zstd',
     resume: bool = False,
-    seed: int = 42
+    seed: int = 42,
+    num_workers: Optional[int] = None
 ) -> Dict:
     """
     Chunk entire tokenized MDS dataset with subset structure.
@@ -533,9 +588,13 @@ def chunk_dataset(
     print(f"Backfill no duplicates: {backfill_no_duplicates}")
     print(f"Add EOS token: {add_eos_token}")
     print(f"Resume mode: {'Enabled' if resume else 'Disabled'}")
+    
+    if num_workers is None:
+        num_workers = max(1, cpu_count() - 1)
+    print(f"Number of workers: {num_workers}")
     print()
     
-    print("Loading tokenizer...")
+    print("Loading tokenizer to get special tokens...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
@@ -600,50 +659,62 @@ def chunk_dataset(
             'backfill': backfill,
             'backfill_no_duplicates': backfill_no_duplicates,
             'add_eos_token': add_eos_token,
-            'seed': seed
+            'seed': seed,
+            'num_workers': num_workers
         }
     }
     
-    subset_pbar = tqdm(subset_folders, desc="Processing subsets", unit="subset")
+    worker_args = []
+    for subset_folder in subset_folders:
+        output_subset = output_path / subset_folder.name
+        worker_args.append((
+            subset_folder,
+            output_subset,
+            tokenizer_path,
+            chunk_size,
+            min_chunk_size,
+            always_skip_size,
+            backfill,
+            backfill_no_duplicates,
+            add_eos_token,
+            bos_token,
+            eos_token,
+            batch_size,
+            compression,
+            resume,
+            seed
+        ))
     
-    for subset_folder in subset_pbar:
-        subset_name = subset_folder.name
-        subset_pbar.set_postfix_str(f"Current: {subset_name}")
-        output_subset = output_path / subset_name
-        
-        try:
-            stats = chunk_subset(
-                subset_path=subset_folder,
-                output_path=output_subset,
-                chunk_size=chunk_size,
-                min_chunk_size=min_chunk_size,
-                always_skip_size=always_skip_size,
-                backfill=backfill,
-                backfill_no_duplicates=backfill_no_duplicates,
-                add_eos_token=add_eos_token,
-                bos_token=bos_token,
-                eos_token=eos_token,
-                tokenizer=tokenizer,
-                batch_size=batch_size,
-                compression=compression,
-                resume=resume,
-                seed=seed
-            )
-            
-            if not stats['skipped']:
+    print(f"Processing {len(subset_folders)} subsets with {num_workers} workers...")
+    print()
+    
+    if num_workers == 1:
+        results = []
+        for args in tqdm(worker_args, desc="Processing subsets", unit="subset"):
+            results.append(chunk_subset_worker(args))
+    else:
+        with Pool(num_workers) as pool:
+            results = list(tqdm(
+                pool.imap(chunk_subset_worker, worker_args),
+                total=len(worker_args),
+                desc="Processing subsets",
+                unit="subset"
+            ))
+    
+    for subset_name, stats in results:
+        if 'error' in stats:
+            print(f"Failed to process {subset_name}: {stats['error']}")
+        else:
+            if not stats.get('skipped', False):
                 overall_stats['total_input_samples'] += stats['total_input_samples']
                 overall_stats['total_output_chunks'] += stats['total_output_chunks']
                 overall_stats['total_tokens_written'] += stats['total_tokens_written']
                 overall_stats['total_duplicated_tokens'] += stats['total_duplicated_tokens']
                 overall_stats['total_tokens_skipped'] += stats['total_tokens_skipped']
-            
-            overall_stats['subset_stats'][subset_name] = {
-                k: v for k, v in stats.items() if k != 'distribution'
-            }
-            
-        except Exception as e:
-            print(f"Failed to process {subset_name}: {e}")
-            overall_stats['subset_stats'][subset_name] = {'error': str(e)}
+        
+        overall_stats['subset_stats'][subset_name] = {
+            k: v for k, v in stats.items() if k != 'distribution'
+        }
     
     stats_file = output_path / "overall_chunking_stats.json"
     with open(stats_file, 'w') as f:
@@ -758,6 +829,12 @@ def main():
         default=42,
         help='Random seed for reproducibility (default: 42)'
     )
+    parser.add_argument(
+        '--num_workers',
+        type=int,
+        default=None,
+        help='Number of parallel workers (default: auto-detect CPU cores - 1)'
+    )
     
     parser.add_argument(
         '--hf_token',
@@ -829,7 +906,8 @@ def main():
             batch_size=args.batch_size,
             compression=compression,
             resume=args.resume,
-            seed=args.seed
+            seed=args.seed,
+            num_workers=args.num_workers
         )
         
         if upload_to_hf_after:

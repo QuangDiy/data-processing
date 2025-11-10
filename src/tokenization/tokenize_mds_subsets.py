@@ -25,8 +25,9 @@ import argparse
 import gc
 import json
 import sys
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -83,7 +84,8 @@ def tokenize_subset(
     tokenizer,
     batch_size: int = 5000,
     compression: str = 'zstd',
-    resume: bool = False
+    resume: bool = False,
+    show_progress: bool = True
 ) -> Dict:
     """
     Tokenize a single subset folder with robust resume capability.
@@ -125,14 +127,17 @@ def tokenize_subset(
         'resumed_from': samples_to_skip
     }
     
-    pbar = tqdm(
-        total=samples_remaining,
-        desc=f"    Processing {subset_path.name}",
-        unit="samples",
-        leave=False,
-        ncols=100,
-        initial=0
-    )
+    if show_progress:
+        pbar = tqdm(
+            total=samples_remaining,
+            desc=f"    Processing {subset_path.name}",
+            unit="samples",
+            leave=False,
+            ncols=100,
+            initial=0
+        )
+    else:
+        pbar = None
     
     samples_processed_count = 0
     
@@ -179,7 +184,8 @@ def tokenize_subset(
                 stats['num_samples'] += 1
                 samples_processed_count += 1
                 
-                pbar.update(1)
+                if pbar:
+                    pbar.update(1)
                 
                 if samples_processed_count % 1000 == 0:
                     save_resume_state(
@@ -198,7 +204,8 @@ def tokenize_subset(
         compression=compression
     )
     
-    pbar.close()
+    if pbar:
+        pbar.close()
     
     stats['output_samples'] = total_samples
     stats['output_size'] = total_size
@@ -214,13 +221,50 @@ def tokenize_subset(
     return stats
 
 
+def tokenize_subset_worker(args: Tuple) -> Tuple[str, Dict]:
+    """
+    Worker function for parallel subset processing.
+    
+    Args:
+        args: Tuple containing all arguments for tokenize_subset
+        
+    Returns:
+        Tuple of (subset_name, stats_dict)
+    """
+    subset_path, output_path, tokenizer_path, batch_size, compression, resume = args
+    
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path,
+            add_prefix_space=True,
+            trust_remote_code=True
+        )
+    except Exception as e:
+        return (subset_path.name, {'error': f"Failed to load tokenizer: {e}"})
+    
+    try:
+        stats = tokenize_subset(
+            subset_path=subset_path,
+            output_path=output_path,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            compression=compression,
+            resume=resume,
+            show_progress=False  # Disable inner progress bar for parallel processing
+        )
+        return (subset_path.name, stats)
+    except Exception as e:
+        return (subset_path.name, {'error': str(e)})
+
+
 def tokenize_dataset(
     input_path: Path,
     output_path: Path,
     tokenizer_path: str,
     batch_size: int = 5000,
     compression: str = 'zstd',
-    resume: bool = False
+    resume: bool = False,
+    num_workers: Optional[int] = None
 ) -> Dict:
     """
     Tokenize entire MDS dataset with subset structure.
@@ -232,6 +276,7 @@ def tokenize_dataset(
         batch_size: Batch size for tokenization
         compression: Compression type
         resume: Whether to resume from existing output
+        num_workers: Number of parallel workers
         
     Returns:
         Overall statistics dictionary
@@ -244,9 +289,13 @@ def tokenize_dataset(
     print(f"Tokenizer: {tokenizer_path}")
     print(f"Batch size: {batch_size}")
     print(f"Resume mode: {'Enabled' if resume else 'Disabled'}")
+    
+    if num_workers is None:
+        num_workers = max(1, cpu_count() - 1)
+    print(f"Number of workers: {num_workers}")
     print()
     
-    print("Loading tokenizer...")
+    print("Loading tokenizer to verify configuration...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
@@ -297,32 +346,43 @@ def tokenize_dataset(
         'subset_stats': {}
     }
     
-    subset_pbar = tqdm(subset_folders, desc="Processing subsets", unit="subset")
+    worker_args = []
+    for subset_folder in subset_folders:
+        output_subset = output_path / subset_folder.name
+        worker_args.append((
+            subset_folder,
+            output_subset,
+            tokenizer_path,
+            batch_size,
+            compression,
+            resume
+        ))
     
-    for subset_folder in subset_pbar:
-        subset_name = subset_folder.name
-        subset_pbar.set_postfix_str(f"Current: {subset_name}")
-        output_subset = output_path / subset_name
-        
-        try:
-            stats = tokenize_subset(
-                subset_path=subset_folder,
-                output_path=output_subset,
-                tokenizer=tokenizer,
-                batch_size=batch_size,
-                compression=compression,
-                resume=resume
-            )
-            
-            if not stats['skipped']:
+    print(f"Processing {len(subset_folders)} subsets with {num_workers} workers...")
+    print()
+    
+    if num_workers == 1:
+        results = []
+        for args in tqdm(worker_args, desc="Processing subsets", unit="subset"):
+            results.append(tokenize_subset_worker(args))
+    else:
+        with Pool(num_workers) as pool:
+            results = list(tqdm(
+                pool.imap(tokenize_subset_worker, worker_args),
+                total=len(worker_args),
+                desc="Processing subsets",
+                unit="subset"
+            ))
+    
+    for subset_name, stats in results:
+        if 'error' in stats:
+            print(f"Failed to process {subset_name}: {stats['error']}")
+        else:
+            if not stats.get('skipped', False):
                 overall_stats['total_tokens'] += stats['num_tokens']
                 overall_stats['total_samples'] += stats['num_samples']
-            
-            overall_stats['subset_stats'][subset_name] = stats
-            
-        except Exception as e:
-            print(f"Failed to process {subset_name}: {e}")
-            overall_stats['subset_stats'][subset_name] = {'error': str(e)}
+        
+        overall_stats['subset_stats'][subset_name] = stats
     
     stats_file = output_path / "overall_tokenization_stats.json"
     with open(stats_file, 'w') as f:
@@ -395,6 +455,12 @@ def main():
         help='Resume from existing output (skip completed subsets)'
     )
     parser.add_argument(
+        '--num_workers',
+        type=int,
+        default=None,
+        help='Number of parallel workers (default: auto-detect CPU cores - 1)'
+    )
+    parser.add_argument(
         '--hf_token',
         type=str,
         default=None,
@@ -451,7 +517,8 @@ def main():
             tokenizer_path=args.tokenizer_path,
             batch_size=args.batch_size,
             compression=compression,
-            resume=args.resume
+            resume=args.resume,
+            num_workers=args.num_workers
         )
         
         if upload_to_hf_after:
