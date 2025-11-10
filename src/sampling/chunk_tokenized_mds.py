@@ -67,7 +67,7 @@ def enforce_prefix_space(chunk: np.ndarray, tokenizer, chunk_size: int) -> np.nd
         Token array with proper prefix space
     """
     try:
-        max_tokens = chunk_size - 1
+        max_tokens = chunk_size - 2
         
         chunk_text = tokenizer.decode(chunk, skip_special_tokens=False)
         
@@ -92,7 +92,7 @@ def enforce_prefix_space(chunk: np.ndarray, tokenizer, chunk_size: int) -> np.nd
             
     except Exception as e:
         print(f"Warning: Could not enforce prefix space: {e}")
-        max_tokens = chunk_size - 1
+        max_tokens = chunk_size - 2
         if len(chunk) <= max_tokens:
             return chunk
         else:
@@ -127,6 +127,11 @@ def add_special_tokens(
     # Optionally add EOS token (currently not used per algorithm)
     # if eos_token is not None and len(chunk) > 0 and chunk[-1] != eos_token:
     #     chunk = np.concatenate([chunk, [eos_token]])
+    
+    # Enforce final length <= chunk_size - 1 (reserve 1 slot by convention)
+    max_final_len = max(0, chunk_size - 1)
+    if len(chunk) > max_final_len:
+        chunk = chunk[:max_final_len]
     
     return chunk.astype(np.uint16)
 
