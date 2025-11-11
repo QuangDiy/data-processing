@@ -198,10 +198,12 @@ def upload_to_hf(
     repo_id: str,
     token: Optional[str] = None,
     private: bool = False,
-    commit_message: Optional[str] = None
+    commit_message: Optional[str] = None,
+    num_workers: int = 16,
+    print_report_every: int = 30
 ):
     """
-    Upload dataset to HuggingFace Hub.
+    Upload large dataset folder to HuggingFace Hub using parallel workers.
     
     Args:
         local_path: Path to local dataset directory
@@ -209,6 +211,8 @@ def upload_to_hf(
         token: HuggingFace API token
         private: Whether to make the repository private
         commit_message: Optional commit message
+        num_workers: Number of parallel upload workers (default: 16)
+        print_report_every: Print progress report every N seconds (default: 30)
     """
     try:
         from huggingface_hub import HfApi, create_repo
@@ -235,17 +239,30 @@ def upload_to_hf(
     if commit_message is None:
         commit_message = f"Upload dataset from {local_path.name}"
     
-    print(f"Uploading {local_path} to {repo_id}...")
+
+    print(f"Uploading large folder to HuggingFace Hub")
+
+    print(f"Local path: {local_path}")
+    print(f"Target repo: {repo_id}")
+    print(f"Workers: {num_workers}")
+    print(f"Report interval: {print_report_every}s")
+
     
-    api.upload_folder(
-        folder_path=str(local_path),
-        repo_id=repo_id,
-        repo_type="dataset",
-        commit_message=commit_message,
-        token=token
-    )
-    
-    print(f"Successfully uploaded to https://huggingface.co/datasets/{repo_id}")
+    try:
+        api.upload_large_folder(
+            folder_path=str(local_path),
+            repo_id=repo_id,
+            repo_type="dataset",
+            num_workers=num_workers,
+            print_report=True,
+            print_report_every=print_report_every
+        )
+        
+        print(f"Successfully uploaded to https://huggingface.co/datasets/{repo_id}")
+        
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        raise
 
 
 def download_from_hf(

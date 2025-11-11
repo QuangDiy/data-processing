@@ -483,6 +483,18 @@ def main():
         default='./temp_tokenization',
         help='Temporary directory for processing (default: ./temp_tokenization)'
     )
+    parser.add_argument(
+        '--upload_workers',
+        type=int,
+        default=16,
+        help='Number of parallel workers for HuggingFace upload (default: 16)'
+    )
+    parser.add_argument(
+        '--upload_report_every',
+        type=int,
+        default=30,
+        help='Print upload progress report every N seconds (default: 30)'
+    )
     
     args = parser.parse_args()
     
@@ -522,16 +534,15 @@ def main():
         )
         
         if upload_to_hf_after:
-            print("Uploading to HuggingFace...")
             upload_to_hf(
                 local_path=output_path,
                 repo_id=args.output_repo,
                 token=args.hf_token,
                 private=args.private,
-                commit_message=f"Tokenized dataset from {args.hf_repo or args.input_dir}"
+                commit_message=f"Tokenized dataset from {args.hf_repo or args.input_dir}",
+                num_workers=args.upload_workers,
+                print_report_every=args.upload_report_every
             )
-            print()
-            print(f"Dataset available at: https://huggingface.co/datasets/{args.output_repo}")
         
         return 0
         

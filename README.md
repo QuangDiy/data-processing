@@ -47,7 +47,9 @@ python src/tokenization/tokenize_mds_subsets.py \
     --tokenizer_path /path/to/tokenizer \
     --batch_size 80000 \
     --resume \
-    --hf_token $HF_TOKEN
+    --hf_token $HF_TOKEN \
+    --upload_workers 16 \
+    --upload_report_every 30
 ```
 
 ### Chunking Only (1K)
@@ -59,7 +61,9 @@ python src/sampling/chunk_tokenized_mds.py \
     --chunk_size 1024 \
     --batch_size 40000 \
     --resume \
-    --hf_token $HF_TOKEN
+    --hf_token $HF_TOKEN \
+    --upload_workers 16 \
+    --upload_report_every 30
 ```
 
 ### Chunking Only (4K)
@@ -85,7 +89,9 @@ python src/sampling/chunk_tokenized_mds.py \
     --always_skip_size 32 \
     --batch_size 20000 \
     --resume \
-    --hf_token $HF_TOKEN
+    --hf_token $HF_TOKEN \
+    --upload_workers 16 \
+    --upload_report_every 30
 ```
 
 ## Key Features
@@ -94,7 +100,7 @@ python src/sampling/chunk_tokenized_mds.py \
 - Tokenize with HUIT-BERT tokenizer (output: uint16)
 - Chunk with backfill algorithm (no duplicates)
 - Support 1K & 8K chunk sizes
-- Auto upload to HuggingFace
+- **Fast parallel upload to HuggingFace** (using `upload_large_folder` with configurable workers)
 - **Parallel processing** (subset-level parallelization for faster processing)
 - **Robust resume capability** (sample-level tracking with automatic recovery)
 - Statistics tracking
