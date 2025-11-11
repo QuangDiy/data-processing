@@ -264,7 +264,8 @@ def tokenize_dataset(
     batch_size: int = 5000,
     compression: str = 'zstd',
     resume: bool = False,
-    num_workers: Optional[int] = None
+    num_workers: Optional[int] = None,
+    subset_filter: Optional[str] = None
 ) -> Dict:
     """
     Tokenize entire MDS dataset with subset structure.
@@ -277,6 +278,7 @@ def tokenize_dataset(
         compression: Compression type
         resume: Whether to resume from existing output
         num_workers: Number of parallel workers
+        subset_filter: Process only this specific subset folder (e.g., 004_00004)
         
     Returns:
         Overall statistics dictionary
@@ -315,7 +317,13 @@ def tokenize_dataset(
     if not subset_folders:
         raise ValueError(f"No subset folders found in {input_path}")
     
-    print(f"Found {len(subset_folders)} subset folders")
+    if subset_filter:
+        subset_folders = [f for f in subset_folders if f.name == subset_filter]
+        if not subset_folders:
+            raise ValueError(f"Subset folder '{subset_filter}' not found in {input_path}")
+        print(f"Processing only subset: {subset_filter}")
+    else:
+        print(f"Found {len(subset_folders)} subset folders")
     
     if resume:
         complete_count = 0
@@ -495,6 +503,12 @@ def main():
         default=30,
         help='Print upload progress report every N seconds (default: 30)'
     )
+    parser.add_argument(
+        '--subset_filter',
+        type=str,
+        default=None,
+        help='Process only this specific subset folder (e.g., 004_00004)'
+    )
     
     args = parser.parse_args()
     
@@ -530,7 +544,8 @@ def main():
             batch_size=args.batch_size,
             compression=compression,
             resume=args.resume,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            subset_filter=args.subset_filter
         )
         
         if upload_to_hf_after:

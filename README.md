@@ -121,6 +121,7 @@ python src/tokenization/tokenize_mds_subsets.py \
     --output_repo QuangDuy/FineWiki-mds-tokenized \
     --tokenizer_path /path/to/tokenizer \
     --batch_size 80000 \
+    --num_workers 2 \
     --hf_token $HF_TOKEN
 
 # Explicitly set worker count
