@@ -229,7 +229,7 @@ def create_merged_split(output_split_dir: Path, shards: List[Dict], use_symlinks
                                 symlink_failed = True
                                 shutil.copy2(source_file, dest_file)
                         else:
-                            shutil.copy2(source_file, dest_file)e
+                            shutil.copy2(source_file, dest_file)
 
                         new_shard['zip_data'] = {
                             'basename': dest_file.name,
@@ -481,20 +481,26 @@ def main():
         print(f"Output directory: {output_dir.absolute()}")
 
         if args.output_repo:
-            print("Uploading splits to HuggingFace")
-            print(f"Uploading train_small split to {args.output_repo}/train_small...")
+            print(f"\nUploading train_small split to {args.output_repo}...")
+            print(f"  Train_small: {len(train_small_shards)} shards")
+
+            # If decompressed, only upload .mds files, not .zstd
+            ignore_patterns = ["*.zstd"] if args.decompress else None
+            if ignore_patterns:
+                print(f"  Only uploading decompressed files (ignoring {ignore_patterns})")
 
             try:
                 upload_to_hf(
-                    local_path=output_dir / "train_small",
-                    repo_id=f"{args.output_repo}/train_small",
+                    local_path=output_dir,
+                    repo_id=args.output_repo,
                     token=hf_token,
                     private=args.private,
-                    commit_message=f"Upload train_small split (merged from {len(args.hf_repos or args.datasets)} datasets)",
+                    commit_message=f"Upload train_small split with {len(train_small_shards)} shards (merged from {len(args.hf_repos or args.datasets)} datasets)",
                     num_workers=args.upload_workers,
-                    print_report_every=args.upload_report_every
+                    print_report_every=args.upload_report_every,
+                    ignore_patterns=ignore_patterns
                 )
-                print(f"Successfully uploaded train_small split")
+                print(f"\nSuccessfully uploaded train_small split to {args.output_repo}")
 
             except Exception as e:
                 print(f"Failed to upload train_small split: {e}")
@@ -533,34 +539,33 @@ def main():
         print("Merge complete!")
         print(f"Output directory: {output_dir.absolute()}")
         if args.output_repo:
-            print("Uploading splits to HuggingFace")
-
-            splits_to_upload = [
-                ("train", train_shards),
-                ("val", val_shards),
-                ("train_small", train_small_shards)
-            ]
-
-            for split_name, split_shards in splits_to_upload:
-                if not split_shards:
-                    print(f"\nSkipping {split_name} split (empty)")
-                    continue
-                    
-                print(f"\nUploading {split_name} split to {args.output_repo}/{split_name}...")
-                try:
-                    upload_to_hf(
-                        local_path=output_dir / split_name,
-                        repo_id=f"{args.output_repo}/{split_name}",
-                        token=hf_token,
-                        private=args.private,
-                        commit_message=f"Upload {split_name} split (merged from {len(args.hf_repos or args.datasets)} datasets)",
-                        num_workers=args.upload_workers,
-                        print_report_every=args.upload_report_every
-                    )
-                    print(f"Successfully uploaded {split_name} split")
-                except Exception as e:
-                    print(f"Failed to upload {split_name} split: {e}")
-                    return 1
+            print(f"\nUploading all splits to {args.output_repo}...")
+            total_shards = len(train_shards) + len(val_shards) + len(train_small_shards)
+            print(f"  Train: {len(train_shards)} shards")
+            print(f"  Val: {len(val_shards)} shards")
+            print(f"  Train_small: {len(train_small_shards)} shards")
+            print(f"  Total: {total_shards} shards")
+            
+            # If decompressed, only upload .mds files, not .zstd
+            ignore_patterns = ["*.zstd"] if args.decompress else None
+            if ignore_patterns:
+                print(f"  Only uploading decompressed files (ignoring {ignore_patterns})")
+            
+            try:
+                upload_to_hf(
+                    local_path=output_dir,
+                    repo_id=args.output_repo,
+                    token=hf_token,
+                    private=args.private,
+                    commit_message=f"Upload merged dataset with {total_shards} shards (train: {len(train_shards)}, val: {len(val_shards)}, train_small: {len(train_small_shards)})",
+                    num_workers=args.upload_workers,
+                    print_report_every=args.upload_report_every,
+                    ignore_patterns=ignore_patterns
+                )
+                print(f"\nSuccessfully uploaded all splits to {args.output_repo}")
+            except Exception as e:
+                print(f"Failed to upload: {e}")
+                return 1
 
         print("\nYou can now use this data with your config:")
         print(f"  data_local: {output_dir}")

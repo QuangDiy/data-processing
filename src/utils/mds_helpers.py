@@ -200,7 +200,8 @@ def upload_to_hf(
     private: bool = False,
     commit_message: Optional[str] = None,
     num_workers: int = 16,
-    print_report_every: int = 30
+    print_report_every: int = 30,
+    ignore_patterns: Optional[List[str]] = None
 ):
     """
     Upload large dataset folder to HuggingFace Hub using parallel workers.
@@ -213,6 +214,7 @@ def upload_to_hf(
         commit_message: Optional commit message
         num_workers: Number of parallel upload workers (default: 16)
         print_report_every: Print progress report every N seconds (default: 30)
+        ignore_patterns: Optional list of patterns to ignore (e.g., ['*.zstd'])
     """
     try:
         from huggingface_hub import HfApi, create_repo
@@ -246,6 +248,8 @@ def upload_to_hf(
     print(f"Target repo: {repo_id}")
     print(f"Workers: {num_workers}")
     print(f"Report interval: {print_report_every}s")
+    if ignore_patterns:
+        print(f"Ignoring patterns: {ignore_patterns}")
 
     
     try:
@@ -255,7 +259,8 @@ def upload_to_hf(
             repo_type="dataset",
             num_workers=num_workers,
             print_report=True,
-            print_report_every=print_report_every
+            print_report_every=print_report_every,
+            ignore_patterns=ignore_patterns
         )
         
         print(f"Successfully uploaded to https://huggingface.co/datasets/{repo_id}")
