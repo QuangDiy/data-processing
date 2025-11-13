@@ -900,10 +900,12 @@ def main():
     if args.hf_repo:
         print(f"Downloading from HuggingFace: {args.hf_repo}")
         cache_dir = Path(args.hf_cache_dir) if args.hf_cache_dir else None
+        subset_folders = [args.subset_filter] if args.subset_filter else None
         input_path = download_from_hf(
             repo_id=args.hf_repo,
             cache_dir=cache_dir,
-            token=args.hf_token
+            token=args.hf_token,
+            subset_folders=subset_folders
         )
         print()
     else:

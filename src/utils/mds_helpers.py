@@ -273,7 +273,8 @@ def upload_to_hf(
 def download_from_hf(
     repo_id: str,
     cache_dir: Optional[Path] = None,
-    token: Optional[str] = None
+    token: Optional[str] = None,
+    subset_folders: Optional[List[str]] = None
 ) -> Path:
     """
     Download MDS dataset from HuggingFace Hub.
@@ -282,6 +283,8 @@ def download_from_hf(
         repo_id: HuggingFace repository ID
         cache_dir: Optional cache directory
         token: Optional HuggingFace API token
+        subset_folders: Optional list of subset folder names to download (e.g., ['003_00000', '004_00004'])
+                        If None, downloads entire dataset
         
     Returns:
         Path to downloaded dataset
@@ -294,15 +297,33 @@ def download_from_hf(
             "Install it with: pip install huggingface_hub"
         )
     
-    print(f"Downloading {repo_id} from HuggingFace...")
-    
-    local_path = snapshot_download(
-        repo_id=repo_id,
-        repo_type="dataset",
-        cache_dir=str(cache_dir) if cache_dir else None,
-        token=token,
-        resume_download=True,
-    )
+    if subset_folders:
+        print(f"Downloading specific subsets from {repo_id}: {', '.join(subset_folders)}")
+        allow_patterns = []
+        for subset in subset_folders:
+            allow_patterns.append(f"{subset}/**")
+            allow_patterns.append(f"{subset}/*")
+        allow_patterns.append("*.json")
+        allow_patterns.append("*.md")
+        allow_patterns.append("*.txt")
+        
+        local_path = snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            cache_dir=str(cache_dir) if cache_dir else None,
+            token=token,
+            resume_download=True,
+            allow_patterns=allow_patterns,
+        )
+    else:
+        print(f"Downloading {repo_id} from HuggingFace...")
+        local_path = snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            cache_dir=str(cache_dir) if cache_dir else None,
+            token=token,
+            resume_download=True,
+        )
     
     print(f"Downloaded to: {local_path}")
     return Path(local_path)
