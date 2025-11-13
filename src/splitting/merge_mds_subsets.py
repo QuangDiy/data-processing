@@ -107,7 +107,7 @@ def split_shards(all_shards: List[Dict], train_ratio: float, val_ratio: float,
     return train_shards, val_shards, train_small_shards
 
 
-def decompress_shard_file(source_file: Path, dest_file: Path, compression: str):
+def decompress_shard_file(source_file: Path, dest_file: Path, compression: str, delete_source: bool = False):
     """
     Decompress a shard file from source to destination.
 
@@ -115,6 +115,7 @@ def decompress_shard_file(source_file: Path, dest_file: Path, compression: str):
         source_file: Path to compressed source file
         dest_file: Path to uncompressed destination file
         compression: Compression type (e.g., 'zstd')
+        delete_source: Whether to delete the source compressed file after successful decompression
     """
 
     with open(source_file, 'rb') as f:
@@ -126,6 +127,11 @@ def decompress_shard_file(source_file: Path, dest_file: Path, compression: str):
     with open(tmp_file, 'wb') as f:
         f.write(decompressed_data)
     tmp_file.rename(dest_file)
+    
+    # Delete the source compressed file if requested
+    if delete_source and source_file.exists():
+        source_file.unlink()
+        print(f"      Deleted compressed file: {source_file.name}")
 
 
 def create_merged_split(output_split_dir: Path, shards: List[Dict], use_symlinks: bool = True,
@@ -205,7 +211,8 @@ def create_merged_split(output_split_dir: Path, shards: List[Dict], use_symlinks
                     if decompress_shards:
                         dest_file = output_split_dir / f"shard.{idx:05d}.mds"
                         compression = shard_data.get('compression', 'zstd')
-                        decompress_shard_file(source_file, dest_file, compression)
+                        # Decompress and delete the source compressed file
+                        decompress_shard_file(source_file, dest_file, compression, delete_source=True)
 
                         new_shard['raw_data'] = {
                             'basename': dest_file.name,
