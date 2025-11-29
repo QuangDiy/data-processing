@@ -553,7 +553,8 @@ def chunk_dataset(
     compression: str = 'zstd',
     resume: bool = False,
     seed: int = 42,
-    num_workers: Optional[int] = None
+    num_workers: Optional[int] = None,
+    subset_filter: Optional[str] = None
 ) -> Dict:
     """
     Chunk entire tokenized MDS dataset with subset structure.
@@ -572,6 +573,8 @@ def chunk_dataset(
         compression: Compression type
         resume: Whether to resume from existing output
         seed: Random seed for reproducibility
+        num_workers: Number of parallel workers
+        subset_filter: Process only this specific subset folder (e.g., 004_00004)
         
     Returns:
         Overall statistics dictionary
@@ -620,7 +623,13 @@ def chunk_dataset(
     if not subset_folders:
         raise ValueError(f"No subset folders found in {input_path}")
     
-    print(f"Found {len(subset_folders)} subset folders")
+    if subset_filter:
+        subset_folders = [f for f in subset_folders if f.name == subset_filter]
+        if not subset_folders:
+            raise ValueError(f"Subset folder '{subset_filter}' not found in {input_path}")
+        print(f"Processing only subset: {subset_filter}")
+    else:
+        print(f"Found {len(subset_folders)} subset folders")
     
     if resume:
         complete_count = 0
@@ -871,6 +880,12 @@ def main():
         default=30,
         help='Print upload progress report every N seconds (default: 30)'
     )
+    parser.add_argument(
+        '--subset_filter',
+        type=str,
+        default=None,
+        help='Process only this specific subset folder (e.g., 004_00004)'
+    )
     
     args = parser.parse_args()
     
@@ -885,10 +900,12 @@ def main():
     if args.hf_repo:
         print(f"Downloading from HuggingFace: {args.hf_repo}")
         cache_dir = Path(args.hf_cache_dir) if args.hf_cache_dir else None
+        subset_folders = [args.subset_filter] if args.subset_filter else None
         input_path = download_from_hf(
             repo_id=args.hf_repo,
             cache_dir=cache_dir,
-            token=args.hf_token
+            token=args.hf_token,
+            subset_folders=subset_folders
         )
         print()
     else:
@@ -919,7 +936,8 @@ def main():
             compression=compression,
             resume=args.resume,
             seed=args.seed,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            subset_filter=args.subset_filter
         )
         
         if upload_to_hf_after:

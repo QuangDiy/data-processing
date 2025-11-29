@@ -1,26 +1,41 @@
-# MDS Tokenization & Chunking Pipeline
+# MDS Tokenization & Chunking
 
 Pipeline processing MDS dataset from HuggingFace: **Tokenization → Chunking → Upload**
 
 ## Quick Start
 
-### 1. Test Pipeline (Recommended First)
-
-```bash
-python src/pipeline/test_pipeline.py
-```
-
-### 2. Run Full Pipeline
+### 1. Tokenize MDS dataset
 
 ```bash
 export HF_TOKEN="your_token_here"
 
-python src/pipeline/run_full_pipeline.py \
-    --input_repo QuangDuy/FineWiki-mds \
+python src/tokenization/tokenize_mds_subsets.py \
+    --hf_repo QuangDuy/FineWiki-mds \
+    --output_repo QuangDuy/FineWiki-mds-tokenized \
     --tokenizer_path /teamspace/studios/this_studio/data-processing/tokenizer/HUIT-BERT \
-    --output_prefix QuangDuy/FineWiki-mds \
-    --batch_size_tokenize 10000 \
-    --batch_size_chunk 5000 \
+    --batch_size 10000 \
+    --hf_token $HF_TOKEN
+```
+
+### 2. Chunk tokenized dataset (1K and/or 8K)
+
+```bash
+# 1K chunks
+python src/sampling/chunk_tokenized_mds.py \
+    --hf_repo QuangDuy/FineWiki-mds-tokenized \
+    --output_repo QuangDuy/FineWiki-mds-tokenized-1024 \
+    --tokenizer_path /teamspace/studios/this_studio/data-processing/tokenizer/HUIT-BERT \
+    --chunk_size 1024 \
+    --batch_size 5000 \
+    --hf_token $HF_TOKEN
+
+# 8K chunks
+python src/sampling/chunk_tokenized_mds.py \
+    --hf_repo QuangDuy/FineWiki-mds-tokenized \
+    --output_repo QuangDuy/FineWiki-mds-tokenized-8192 \
+    --tokenizer_path /teamspace/studios/this_studio/data-processing/tokenizer/HUIT-BERT \
+    --chunk_size 8192 \
+    --batch_size 5000 \
     --hf_token $HF_TOKEN
 ```
 
@@ -28,14 +43,6 @@ python src/pipeline/run_full_pipeline.py \
 - `QuangDuy/FineWiki-mds-tokenized` (tokenized data)
 - `QuangDuy/FineWiki-mds-tokenized-1024` (1K chunks)
 - `QuangDuy/FineWiki-mds-tokenized-8192` (8K chunks)
-
-## Pipeline Flow
-
-```
-Raw MDS (HF) → Tokenization (HUIT-BERT) → Tokenized MDS
-                                              ├→ Chunking 1K → Chunked 1024
-                                              └→ Chunking 8K → Chunked 8192
-```
 
 ## Individual Stages
 
@@ -94,6 +101,80 @@ python src/sampling/chunk_tokenized_mds.py \
     --upload_report_every 30
 ```
 
+## Merging and Splitting Datasets
+
+Merge multiple MDS datasets and split them into train/val/train_small splits.
+
+### Merge from Local Directories
+
+```bash
+python src/splitting/merge_mds_subsets.py \
+    --source_dir ./source_data \
+    --output_dir ./data \
+    --train_ratio 0.9 \
+    --val_ratio 0.1 \
+    --train_small_ratio 0.05 \
+    --datasets FineWeb2-vie-mds FineWiki-mds
+```
+
+### Merge from HuggingFace and Upload
+
+```bash
+python src/splitting/merge_mds_subsets.py \
+    --hf_repos QuangDuy/FineWiki-mds QuangDuy/FineWeb2-vie-mds \
+    --output_dir ./data \
+    --output_repo QuangDuy/merged-dataset \
+    --train_ratio 0.9 \
+    --val_ratio 0.1 \
+    --train_small_ratio 0.05 \
+    --hf_token $HF_TOKEN \
+    --upload_workers 16 \
+    --upload_report_every 30
+```
+
+### Create Only train_small Split
+
+```bash
+python src/splitting/merge_mds_subsets.py \
+    --hf_repos QuangDuy/FineWiki-mds \
+    --output_dir ./data \
+    --train_small_ratio 0.05 \
+    --only-train-small
+```
+
+### Options
+
+- `--source_dir`: Source directory containing dataset folders (when using local datasets)
+- `--hf_repos`: HuggingFace repository IDs to download (space-separated)
+- `--output_dir`: Output directory for merged splits (required)
+- `--output_repo`: HuggingFace repository ID to upload splits to (optional)
+- `--train_ratio`: Ratio of data for training (default: 0.9)
+- `--val_ratio`: Ratio of data for validation (default: 0.1)
+- `--train_small_ratio`: Ratio of train data for train_small split (default: 0.05)
+- `--seed`: Random seed for reproducible splits (default: 42)
+- `--no-symlinks`: Copy files instead of creating symlinks
+- `--decompress`: Decompress shards to create raw_data
+- `--only-train-small`: Only create train_small split without train/val
+
+**Output Structure:**
+```
+output_dir/
+├── train/
+│   ├── index.json
+│   └── shard.*.mds (or symlinks)
+├── val/
+│   ├── index.json
+│   └── shard.*.mds
+└── train_small/
+    ├── index.json
+    └── shard.*.mds
+```
+
+When `--output_repo` is specified, each split is uploaded as a separate HuggingFace dataset:
+- `{output_repo}/train`
+- `{output_repo}/val`
+- `{output_repo}/train_small`
+
 ## Key Features
 
 - Download & process MDS datasets from HuggingFace
@@ -121,6 +202,7 @@ python src/tokenization/tokenize_mds_subsets.py \
     --output_repo QuangDuy/FineWiki-mds-tokenized \
     --tokenizer_path /path/to/tokenizer \
     --batch_size 80000 \
+    --num_workers 2 \
     --hf_token $HF_TOKEN
 
 # Explicitly set worker count
@@ -152,7 +234,7 @@ python src/tokenization/tokenize_mds_subsets.py \
 | Config | Chunk Size | Min Size | Skip Size | Use Case |
 |--------|-----------|----------|-----------|----------|
 | 1K     | 1024      | 512      | 128       | Stage 1 |
-| 8K     | 8192      | 512      | 32        | Stage 2 |
+| 8K     | 4096      | 1024      | 128        | Stage 2 |
 
 ## Resume Capability
 
@@ -264,7 +346,5 @@ src/
 │   └── read_chunk_samples.py       # Read and inspect chunk samples
 ├── tokenization/tokenize_mds_subsets.py   # Tokenization
 ├── sampling/chunk_tokenized_mds.py   # Chunking
-└── pipeline/
-    ├── run_full_pipeline.py          # Full pipeline
-    └── test_pipeline.py              # Test suite
+├── splitting/merge_mds_subsets.py   # Merge and split datasets
 ```
