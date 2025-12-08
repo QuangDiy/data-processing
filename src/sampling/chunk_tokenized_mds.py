@@ -486,7 +486,7 @@ def chunk_subset(
     
     clear_resume_state(output_path)
     
-    print(f"    ✓ Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks "
+    print(f"Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks "
           f"(duplicated: {stats['total_duplicated_tokens']:,}, skipped: {stats['total_tokens_skipped']:,})")
     
     return stats

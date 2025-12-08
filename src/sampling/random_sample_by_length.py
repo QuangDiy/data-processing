@@ -208,7 +208,7 @@ def save_samples_to_mds(
     print()
     print(f"Saving samples to MDS format: {output_path}")
     
-    subset_path = output_path / "000_00000"
+    subset_path = output_path
     
     def samples_generator():
         """Generator that yields all samples from all bins."""

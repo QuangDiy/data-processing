@@ -179,3 +179,5 @@ tokenizer/
 temp_tokenization/
 temp_chunking/
 temp_sampling/
+output/
+output_eng/
