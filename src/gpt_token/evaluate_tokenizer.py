@@ -18,17 +18,17 @@ Usage:
 """
 
 import argparse
-import sys
 from pathlib import Path
-
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+import os
+os.environ["PYTHONUTF8"] = "1"
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import random
+
+random.seed(42)
+np.random.seed(42)
 
 
 REFERENCE_TOKENIZERS = [
@@ -37,33 +37,35 @@ REFERENCE_TOKENIZERS = [
     ("ViDeBERTa", "Fsoft-AIC/videberta-xsmall"),
     ("ViBERT", "FPTAI/vibert-base-cased"),
     ("XLM-RoBERTa", "xlm-roberta-base"),
-    ("VietMistral", "hiieu/Vistral-7B-Chat-function-calling")
+    # ("VietMistral", "hiieu/Vistral-7B-Chat-function-calling")
 ]
 
 LANGUAGES = [
     ("Vietnamese", "vie_Latn", "vi"),
-    ("English", "eng_Latn", "en"),
+    # ("English", "eng_Latn", "en"),
 ]
 
 
-def load_wikipedia_data(languages: list, num_samples: int = 10000) -> dict:
+def load_evaluation_data(languages: list, num_samples: int = 10000) -> dict:
     """
-    Load Wikipedia data for evaluation.
+    Load Wikipedia and FineWeb2 data for evaluation.
     
     Args:
         languages: List of (language_name, lang_code, short_code) tuples
-        num_samples: Number of articles to sample per language
+        num_samples: Number of articles/documents to sample per language per dataset
         
     Returns:
-        Dictionary mapping lang_code to concatenated text
+        Dictionary with keys 'wikipedia' and 'fineweb2', each mapping lang_code to text
     """
     from datasets import load_dataset
     
-    wikis = {}
+    data = {
+        'wikipedia': {},
+        'fineweb2': {}
+    }
     
     for lang_name, lang_code, short_lang_code in languages:
         print(f"Loading Wikipedia for {lang_name} ({short_lang_code})...")
-        
         try:
             wiki_ds = load_dataset(
                 "wikimedia/wikipedia", 
@@ -74,21 +76,45 @@ def load_wikipedia_data(languages: list, num_samples: int = 10000) -> dict:
             wiki_ds = wiki_ds.shuffle(seed=42, buffer_size=10_000)
             
             ds_iter = iter(wiki_ds)
-            texts = []
-            for _ in tqdm(range(num_samples), desc=f"Sampling {lang_name}"):
+            wiki_texts = []
+            for _ in tqdm(range(num_samples), desc=f"Sampling Wikipedia {lang_name}"):
                 try:
-                    texts.append(next(ds_iter)["text"])
+                    wiki_texts.append(next(ds_iter)["text"])
                 except StopIteration:
                     break
             
-            wikis[lang_code] = "\n".join(texts)
-            print(f"  Loaded {len(texts)} articles, {len(wikis[lang_code]):,} characters")
+            data['wikipedia'][lang_code] = "\n".join(wiki_texts)
+            print(f"  Loaded {len(wiki_texts)} Wikipedia articles, {sum(len(t) for t in wiki_texts):,} characters")
             
         except Exception as e:
-            print(f"  Error loading {lang_name}: {e}")
-            wikis[lang_code] = ""
+            print(f"  Error loading Wikipedia {lang_name}: {e}")
+        
+        if lang_code == "vie_Latn":
+            print(f"Loading FineWeb2 for {lang_name}...")
+            try:
+                fw = load_dataset(
+                    "HuggingFaceFW/fineweb-2", 
+                    name="vie_Latn", 
+                    split="train", 
+                    streaming=True
+                )
+                fw = fw.shuffle(seed=42, buffer_size=10_000)
+                
+                fw_iter = iter(fw)
+                fw_texts = []
+                for _ in tqdm(range(num_samples), desc=f"Sampling FineWeb2 {lang_name}"):
+                    try:
+                        fw_texts.append(next(fw_iter)["text"])
+                    except StopIteration:
+                        break
+                
+                data['fineweb2'][lang_code] = "\n".join(fw_texts)
+                print(f"  Loaded {len(fw_texts)} FineWeb2 documents, {sum(len(t) for t in fw_texts):,} characters")
+                
+            except Exception as e:
+                print(f"  Error loading FineWeb2 {lang_name}: {e}")
     
-    return wikis
+    return data
 
 
 class SimpleSyllableTokenizer:
@@ -150,7 +176,7 @@ def evaluate_tokenizer(
     compare_paths: list = None
 ) -> pd.DataFrame:
     """
-    Evaluate a tokenizer on multiple languages.
+    Evaluate a tokenizer on multiple languages and datasets.
     
     Args:
         tokenizer_path: Path to HuggingFace tokenizer directory or tokenizer ID
@@ -171,9 +197,9 @@ def evaluate_tokenizer(
         reference_tokenizers = REFERENCE_TOKENIZERS
     
     print("\n" + "=" * 70)
-    print("Loading Wikipedia Data for Evaluation")
+    print("Loading Evaluation Data (Wikipedia + FineWeb2)")
     print("=" * 70)
-    wikis = load_wikipedia_data(languages, num_samples)
+    data = load_evaluation_data(languages, num_samples)
     
     tokenizers_to_evaluate = []
     
@@ -234,31 +260,54 @@ def evaluate_tokenizer(
         print(f"\nEvaluating {tokenizer_name}...")
         
         for lang_name, lang_code, short_lang_code in languages:
-            if not wikis.get(lang_code):
-                print(f"  Skipping {lang_name}: no data")
-                continue
+            # Evaluate on Wikipedia
+            if lang_code in data['wikipedia']:
+                print(f"  Computing metrics for {lang_name} (Wikipedia)...")
                 
-            print(f"  Computing metrics for {lang_name}...")
+                try:
+                    fertility, pcw = compute_tokenizer_metrics(
+                        tokenizer, 
+                        data['wikipedia'][lang_code]
+                    )
+                    
+                    results.append({
+                        "tokenizer": tokenizer_name,
+                        "language": lang_name,
+                        "dataset": "Wikipedia",
+                        "fertility": fertility,
+                        "pcw": pcw,
+                        "vocab_size": tokenizer.vocab_size
+                    })
+                    
+                    print(f"    Fertility: {fertility:.4f}")
+                    print(f"    PCW: {pcw:.4f}")
+                    
+                except Exception as e:
+                    print(f"    Error: {e}")
             
-            try:
-                fertility, pcw = compute_tokenizer_metrics(
-                    tokenizer, 
-                    wikis[lang_code]
-                )
+            if lang_code in data['fineweb2']:
+                print(f"  Computing metrics for {lang_name} (FineWeb2)...")
                 
-                results.append({
-                    "tokenizer": tokenizer_name,
-                    "language": lang_name,
-                    "fertility": fertility,
-                    "pcw": pcw,
-                    "vocab_size": tokenizer.vocab_size
-                })
-                
-                print(f"    Fertility: {fertility:.4f}")
-                print(f"    PCW: {pcw:.4f}")
-                
-            except Exception as e:
-                print(f"    Error: {e}")
+                try:
+                    fertility, pcw = compute_tokenizer_metrics(
+                        tokenizer, 
+                        data['fineweb2'][lang_code]
+                    )
+                    
+                    results.append({
+                        "tokenizer": tokenizer_name,
+                        "language": lang_name,
+                        "dataset": "FineWeb2",
+                        "fertility": fertility,
+                        "pcw": pcw,
+                        "vocab_size": tokenizer.vocab_size
+                    })
+                    
+                    print(f"    Fertility: {fertility:.4f}")
+                    print(f"    PCW: {pcw:.4f}")
+                    
+                except Exception as e:
+                    print(f"    Error: {e}")
     
     return pd.DataFrame(results)
 
@@ -273,18 +322,21 @@ def print_results(df: pd.DataFrame):
     print("-" * 70)
     print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}" if isinstance(x, float) else str(x)))
     
-    print("\n" + "-" * 70)
-    print("Summary by Tokenizer (averaged across languages):")
-    print("-" * 70)
-    
-    summary = df.groupby('tokenizer').agg({
-        'fertility': 'mean',
-        'pcw': 'mean',
-        'vocab_size': 'first'
-    }).round(4)
-    
-    summary = summary.sort_values('fertility')
-    print(summary.to_string())
+    # Summary by dataset
+    for dataset_name in df['dataset'].unique():
+        print("\n" + "-" * 70)
+        print(f"Summary for {dataset_name} (averaged across languages):")
+        print("-" * 70)
+        
+        dataset_df = df[df['dataset'] == dataset_name]
+        summary = dataset_df.groupby('tokenizer').agg({
+            'fertility': 'mean',
+            'pcw': 'mean',
+            'vocab_size': 'first'
+        }).round(4)
+        
+        summary = summary.sort_values('fertility')
+        print(summary.to_string())
 
 
 def main():
@@ -345,10 +397,10 @@ def main():
     
     lang_map = {
         'vi': ("Vietnamese", "vie_Latn", "vi"),
-        'en': ("English", "eng_Latn", "en"),
+        # 'en': ("English", "eng_Latn", "en"),
     }
     
-    languages = [lang_map.get(lang, lang_map['en']) for lang in args.languages if lang in lang_map]
+    languages = [lang_map.get(lang, lang_map['vi']) for lang in args.languages if lang in lang_map]
     
     if not languages:
         print("Error: No valid languages specified")

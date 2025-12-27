@@ -184,6 +184,7 @@ When `--output_repo` is specified, each split is uploaded as a separate HuggingF
 - **Fast parallel upload to HuggingFace** (using `upload_large_folder` with configurable workers)
 - **Parallel processing** (subset-level parallelization for faster processing)
 - **Robust resume capability** (sample-level tracking with automatic recovery)
+- **Memory-efficient MDS loading** (streaming decompression with cache limit)
 - Statistics tracking
 - Preserve subset structure (XXX_XXXXX folders)
 

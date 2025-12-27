@@ -7,9 +7,6 @@ authors = [
 ]
 requires-python = ">=3.10"
 
-[project.urls]
-Homepage = "https://github.com/QuangDiy/data-processing"
-Repository = "https://github.com/QuangDiy/data-processing"
 dependencies = [
     "mosaicml[nlp,wandb]==0.32.1",
     "mosaicml-streaming==0.7.6",
@@ -24,9 +21,12 @@ dependencies = [
     "sentencepiece>=0.1.99",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
-    "spacy>=3.7.0",
-    "pyvi>=0.1.1",
+    "spacy>=3.7.0"
 ]
+
+[project.urls]
+Homepage = "https://github.com/QuangDiy/data-processing"
+Repository = "https://github.com/QuangDiy/data-processing"
 
 [build-system]
 requires = ["hatchling"]

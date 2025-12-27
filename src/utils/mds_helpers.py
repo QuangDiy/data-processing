@@ -5,13 +5,17 @@ Provides functions for loading, saving, and uploading MDS datasets.
 """
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union, Iterator
 from streaming import MDSWriter, StreamingDataset
+from streaming.base.format import reader_from_json
+from streaming.base.spanner import Spanner
 import numpy as np
 from tqdm import tqdm
+from torch.utils.data import Dataset
 
 
 def discover_subset_folders(dataset_path: Path) -> List[Path]:
@@ -54,13 +58,39 @@ def save_index_file(index_path: Path, index_data: Dict):
         json.dump(index_data, f, indent=2)
 
 
-def load_mds_subset(subset_path: Path, batch_size: int = 1000):
+def has_compressed_files(subset_path: Path) -> bool:
+    """
+    Check if subset contains compressed (.zstd) files.
+    
+    Args:
+        subset_path: Path to subset folder
+        
+    Returns:
+        True if compressed files exist, False otherwise
+    """
+    return any(subset_path.glob("*.mds.zstd"))
+
+
+def load_mds_subset(
+    subset_path: Path, 
+    batch_size: int = 1000, 
+    delete_zstd_after: bool = False,
+    use_streaming: Optional[bool] = None
+):
     """
     Load samples from an MDS subset folder.
+    
+    Automatically chooses optimal loading method:
+    - NoStreamingMDSDataset: For uncompressed local files (faster, more efficient)
+    - StreamingDataset: For compressed files or when explicitly requested
     
     Args:
         subset_path: Path to subset folder containing index.json and shards
         batch_size: Number of samples to yield at once
+        delete_zstd_after: If True, delete .zstd files after loading completes.
+                          Only deletes .zstd if corresponding .mds exists (safe).
+        use_streaming: Force use of StreamingDataset (True) or NoStreamingMDSDataset (False).
+                      If None, automatically detect based on file compression.
         
     Yields:
         Batches of samples as lists of dictionaries
@@ -72,8 +102,29 @@ def load_mds_subset(subset_path: Path, batch_size: int = 1000):
     if not index_file.exists():
         raise FileNotFoundError(f"No index.json found in {subset_path}")
     
-    dataset = StreamingDataset(local=str(subset_path), split=None, shuffle=False, batch_size=batch_size)
+    # Auto-detect: use streaming if compressed files exist
+    if use_streaming is None:
+        use_streaming = has_compressed_files(subset_path)
     
+    if use_streaming:
+        # Use StreamingDataset for compressed files or when explicitly requested
+        print(f"Using StreamingDataset (compressed files detected)")
+        dataset = StreamingDataset(
+            local=str(subset_path), 
+            split=None, 
+            shuffle=False, 
+            batch_size=batch_size
+        )
+    else:
+        # Use NoStreamingMDSDataset for uncompressed local files (more efficient)
+        print(f"Using NoStreamingMDSDataset (no compression, direct access)")
+        dataset = NoStreamingMDSDataset(
+            local=subset_path,
+            split=None,
+            shuffle=False
+        )
+    
+    # Yield samples in batches
     batch = []
     for sample in dataset:
         batch.append(sample)
@@ -83,6 +134,125 @@ def load_mds_subset(subset_path: Path, batch_size: int = 1000):
     
     if batch:
         yield batch
+    
+    # Clean up .zstd files after iteration completes (only if .mds exists)
+    if delete_zstd_after:
+        zstd_files = list(subset_path.glob("*.mds.zstd"))
+        for zstd_file in zstd_files:
+            # Safety check: only delete if uncompressed .mds file exists
+            mds_file = zstd_file.with_suffix('')  # Remove .zstd -> get .mds path
+            if not mds_file.exists():
+                continue  # Skip - don't delete .zstd if .mds doesn't exist
+            try:
+                zstd_file.unlink()
+            except Exception as e:
+                print(f"Warning: Could not delete {zstd_file}: {e}")
+
+
+class NoStreamingMDSDataset(Dataset):
+    """
+    Efficient dataset class for reading local MDS format data without streaming overhead.
+    
+    This is a slimmer, more efficient alternative to StreamingDataset when:
+    - Data is stored locally (no remote streaming needed)
+    - Files are uncompressed (.mds without .zstd)
+    - You want direct file access without streaming infrastructure
+    
+    Based on the NoStreamingDataset pattern from MosaicML/OLMo.
+    
+    Args:
+        local: Path to local dataset directory
+        split: Optional split subdirectory name
+        shuffle: Whether to shuffle samples (default: False)
+        
+    Example:
+        >>> dataset = NoStreamingMDSDataset(
+        ...     local='data/FineWiki-mds/datasets--QuangDuy--FineWiki-mds/snapshots/.../000_00000',
+        ...     split=None
+        ... )
+        >>> sample = dataset[0]  # Get first sample
+        >>> print(sample['text'][:100])
+    """
+    
+    def __init__(
+        self,
+        local: Union[str, Path],
+        split: Optional[str] = None,
+        shuffle: bool = False,
+    ) -> None:
+        super().__init__()
+        
+        local = Path(local) if isinstance(local, str) else local
+        
+        if split is not None:
+            split_path = local / split
+        else:
+            split_path = local
+            
+        if not split_path.exists():
+            raise FileNotFoundError(f"Dataset path does not exist: {split_path}")
+            
+        index_file_path = split_path / "index.json"
+        if not index_file_path.exists():
+            raise FileNotFoundError(f"No index.json found in {split_path}")
+            
+        with open(index_file_path, 'r') as f:
+            obj = json.load(f)
+        
+        self.shards = []
+        for info in obj["shards"]:
+            if 'zip_data' not in info and info.get('compression'):
+                info = dict(info)
+                info['zip_data'] = None
+            
+            shard = reader_from_json(str(local), split, info)
+            
+            raw_filename = os.path.join(shard.dirname, shard.split or '', shard.raw_data.basename)
+            if not os.path.isfile(raw_filename):
+                raise FileNotFoundError(f"Raw shard file not found: {raw_filename}")
+            
+            shard.validate(True)
+            self.shards.append(shard)
+        
+        samples_per_shard = np.array([shard.samples for shard in self.shards], dtype=np.int64)
+        self.total_samples = int(samples_per_shard.sum())
+        
+        self.spanner = Spanner(samples_per_shard)
+        
+        self.shuffle = shuffle
+        if shuffle:
+            self.shuffle_indices = np.random.permutation(self.total_samples)
+        else:
+            self.shuffle_indices = None
+    
+    def __getitem__(self, index: int) -> Dict:
+        """Get sample by index."""
+        if self.shuffle_indices is not None:
+            index = self.shuffle_indices[index]
+        
+        shard_id, shard_sample_id = self.spanner[index]
+        
+        shard = self.shards[shard_id]
+        sample = shard[shard_sample_id]
+        
+        return sample
+    
+    def __len__(self) -> int:
+        """Total number of samples in dataset."""
+        return self.total_samples
+    
+    def __iter__(self) -> Iterator[Dict]:
+        """Iterate over all samples in the dataset."""
+        for i in range(len(self)):
+            yield self[i]
+    
+    def __repr__(self) -> str:
+        return (
+            f"NoStreamingMDSDataset("
+            f"shards={len(self.shards)}, "
+            f"samples={self.total_samples}, "
+            f"shuffle={self.shuffle})"
+        )
 
 
 def save_mds_subset(
@@ -107,7 +277,6 @@ def save_mds_subset(
     Returns:
         Tuple of (total_samples, total_size_bytes)
     """
-    # Clean existing directory if it's not empty (MDSWriter requires empty directories)
     if output_path.exists() and any(output_path.iterdir()):
         shutil.rmtree(output_path)
     
