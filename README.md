@@ -197,7 +197,6 @@ Both tokenization and chunking now support parallel processing of multiple subse
 Add the `--num_workers` flag to control parallelization:
 
 ```bash
-# Auto-detect optimal worker count (CPU cores - 1)
 python src/tokenization/tokenize_mds_subsets.py \
     --hf_repo QuangDuy/FineWiki-mds \
     --output_repo QuangDuy/FineWiki-mds-tokenized \
@@ -215,7 +214,6 @@ python src/sampling/chunk_tokenized_mds.py \
     --num_workers 4 \
     --hf_token $HF_TOKEN
 
-# Sequential processing (1 worker)
 python src/tokenization/tokenize_mds_subsets.py \
     --input_dir ./data/FineWiki-mds \
     --output_dir ./data/FineWiki-mds-tokenized \
@@ -232,10 +230,10 @@ python src/tokenization/tokenize_mds_subsets.py \
 
 ## Configuration Presets
 
-| Config | Chunk Size | Min Size | Skip Size | Use Case |
-|--------|-----------|----------|-----------|----------|
-| 1K     | 1024      | 512      | 128       | Stage 1 |
-| 8K     | 4096      | 1024      | 128        | Stage 2 |
+| Config | Chunk Size | Min Size | Skip Size | Min Sample Token Size | Use Case |
+|--------|-----------|----------|-----------|-----------------------|----------|
+| 1K     | 1024      | 512      | 128       | 2                   | Stage 1 |
+| 8K     | 4096      | 1024      | 128       | 2048                  | Stage 2 |
 
 ## Resume Capability
 

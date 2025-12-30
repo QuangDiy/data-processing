@@ -5,11 +5,17 @@ Chunk tokenized MDS datasets into fixed-length sequences.
 This script implements the chunking algorithm from thuat_toan.md to split
 tokenized sequences into fixed-length chunks suitable for model training.
 
+For BERT-style models, each chunk will have [CLS] token prepended at the 
+beginning, ensuring compatibility with BERT pre-training and fine-tuning tasks.
+The script automatically detects if the tokenizer has CLS token and uses it 
+appropriately.
+
 Usage:
     # Chunk from HuggingFace and upload
     python src/sampling/chunk_tokenized_mds.py \
         --hf_repo QuangDuy/FineWiki-mds-tokenized \
         --output_repo QuangDuy/FineWiki-mds-tokenized-1024 \
+        --tokenizer_path output/tokenizer_15m/hf_15m \
         --chunk_size 1024 \
         --min_chunk_size 512 \
         --always_skip_size 128
@@ -18,7 +24,13 @@ Usage:
     python src/sampling/chunk_tokenized_mds.py \
         --input_dir ./data/FineWiki-mds-tokenized \
         --output_dir ./data/FineWiki-mds-tokenized-1024 \
+        --tokenizer_path output/tokenizer_15m/hf_15m \
         --chunk_size 1024
+
+Note:
+    - For BERT tokenizers: [CLS] token is added at the start of each chunk
+    - For GPT tokenizers: BOS token is added at the start of each chunk
+    - The chunk_size accounts for these special tokens (actual content is chunk_size - 2)
 """
 
 import argparse
@@ -108,31 +120,63 @@ def add_special_tokens(
     chunk_size: int
 ) -> np.ndarray:
     """
-    Add BOS token and ensure prefix space.
+    Add special tokens to chunk (typically [CLS] and [SEP] for BERT-style models).
+    
+    For BERT-style models, this creates the format: [CLS] text [SEP]
+    - [CLS] token is added at the beginning
+    - [SEP] token is added at the end (if eos_token is provided)
+    
+    Both tokens are checked for duplicates before adding.
     
     Args:
         chunk: Token array
-        bos_token: BOS token ID
-        eos_token: EOS token ID (optional, not used currently)
+        bos_token: BOS/CLS token ID (for BERT models, this is [CLS])
+        eos_token: EOS/SEP token ID (for BERT models, this is [SEP])
         tokenizer: HuggingFace tokenizer
         chunk_size: Maximum chunk size
         
     Returns:
-        Chunk with special tokens as uint16 array
+        Chunk with special tokens as uint16 array, format: [CLS] content [SEP]
     """
-    chunk = enforce_prefix_space(chunk, tokenizer, chunk_size)
+    # IMPORTANT: Check if chunk already has CLS/BOS token BEFORE enforce_prefix_space
+    # This prevents re-encoding chunks that already have the special token
+    has_bos_token = len(chunk) > 0 and chunk[0] == bos_token
     
-    if len(chunk) > 0 and chunk[0] != bos_token:
-        chunk = np.concatenate([[bos_token], chunk])
+    if not has_bos_token:
+        # Only enforce prefix space if chunk doesn't have CLS/BOS yet
+        # because enforce_prefix_space may re-encode the chunk
+        chunk = enforce_prefix_space(chunk, tokenizer, chunk_size)
     
-    # Optionally add EOS token (currently not used per algorithm)
-    # if eos_token is not None and len(chunk) > 0 and chunk[-1] != eos_token:
-    #     chunk = np.concatenate([chunk, [eos_token]])
+    # IMPORTANT: Add [CLS]/BOS token ONLY if not already present
+    # This prevents duplicate special tokens at the start of chunks
+    if len(chunk) > 0:
+        if chunk[0] != bos_token:
+            # Chunk doesn't have CLS/BOS token yet, add it
+            chunk = np.concatenate([[bos_token], chunk])
+        # else: Chunk already has CLS/BOS token at position 0, don't add again
+    elif len(chunk) == 0:
+        # Empty chunk, just add the CLS/BOS token
+        chunk = np.array([bos_token], dtype=np.uint16)
     
-    # Enforce final length <= chunk_size - 1 (reserve 1 slot by convention)
-    max_final_len = max(0, chunk_size - 1)
+    # Enforce final length BEFORE adding SEP to ensure SEP is not truncated
+    # Reserve space for SEP token if it will be added
+    if eos_token is not None:
+        max_final_len = max(0, chunk_size - 2)  # Reserve for CLS and SEP
+    else:
+        max_final_len = max(0, chunk_size - 1)  # Reserve only for CLS
+        
     if len(chunk) > max_final_len:
         chunk = chunk[:max_final_len]
+    
+    # Add [SEP] token (for BERT models) or EOS token at the end of chunk
+    # IMPORTANT: Add [SEP]/EOS token ONLY if not already present
+    # This creates proper BERT format: [CLS] text [SEP]
+    # Add AFTER truncation to ensure SEP is not removed
+    if eos_token is not None and len(chunk) > 0:
+        if chunk[-1] != eos_token:
+            # Chunk doesn't have SEP/EOS token yet, add it
+            chunk = np.concatenate([chunk, [eos_token]])
+        # else: Chunk already has SEP/EOS token at the end, don't add again
     
     return chunk.astype(np.uint16)
 
@@ -153,7 +197,7 @@ def chunk_instance(
     """
     Chunk a tokenized instance into fixed-length chunks.
     
-    Implements the algorithm from thuat_toan.md lines 123-253.
+    Each chunk will have [CLS] token (for BERT models) or BOS token added at the beginning.
     
     Args:
         tokens: Array of token IDs
@@ -163,8 +207,8 @@ def chunk_instance(
         backfill: Whether to backfill short chunks
         backfill_no_duplicates: Whether backfill should avoid duplicates
         add_eos_token: Whether to add EOS token to end of sequence
-        bos_token: BOS token ID
-        eos_token: EOS token ID
+        bos_token: BOS/CLS token ID (typically [CLS] for BERT models)
+        eos_token: EOS/SEP token ID (typically [SEP] for BERT models)
         tokenizer: HuggingFace tokenizer for prefix space enforcement
         random_generator: Random generator for reproducibility
         
@@ -177,6 +221,8 @@ def chunk_instance(
     if add_eos_token and len(tokens) > 0 and tokens[-1] != eos_token:
         tokens = np.concatenate([tokens, [eos_token]])
     
+    # Reserve space for [CLS] token (and potential [SEP] token in future)
+    # This ensures the final chunk with [CLS] prepended stays within chunk_size limit
     chunk_size_for_cls_eos = chunk_size - 2
     
     if chunk_size_for_cls_eos <= 0:
@@ -226,7 +272,7 @@ def chunk_instance(
                         chunks[-1] = add_special_tokens(
                             prev_chunk_no_bos,
                             bos_token,
-                            None,
+                            eos_token,
                             tokenizer,
                             chunk_size
                         )
@@ -236,7 +282,7 @@ def chunk_instance(
                     chunks.append(add_special_tokens(
                         backfilled_chunk,
                         bos_token,
-                        None,
+                        eos_token,
                         tokenizer,
                         chunk_size
                     ))
@@ -257,7 +303,7 @@ def chunk_instance(
                     chunks.append(add_special_tokens(
                         backfilled_chunk,
                         bos_token,
-                        None,
+                        eos_token,
                         tokenizer,
                         chunk_size
                     ))
@@ -266,7 +312,7 @@ def chunk_instance(
                 chunks.append(add_special_tokens(
                     chunk,
                     bos_token,
-                    None,
+                    eos_token,
                     tokenizer,
                     chunk_size
                 ))
@@ -278,7 +324,7 @@ def chunk_instance(
             chunks.append(add_special_tokens(
                 chunk,
                 bos_token,
-                None,
+                eos_token,
                 tokenizer,
                 chunk_size
             ))
@@ -323,7 +369,8 @@ def chunk_subset(
     compression: str = 'zstd',
     resume: bool = False,
     seed: int = 42,
-    show_progress: bool = True
+    show_progress: bool = True,
+    min_sample_token_size: int = 0
 ) -> Dict:
     """
     Chunk a single subset folder with robust resume capability.
@@ -344,6 +391,7 @@ def chunk_subset(
         compression: Compression type
         resume: Whether to resume from existing partial output
         seed: Random seed for reproducibility
+        min_sample_token_size: Minimum tokens required in sample (samples shorter are skipped)
         
     Returns:
         Statistics dictionary
@@ -373,6 +421,7 @@ def chunk_subset(
         'total_tokens_skipped': 0,
         'total_input_samples': 0,
         'total_output_chunks': 0,
+        'total_samples_skipped_by_length': 0, 
         'distribution': [],
         'skipped': False,
         'resumed_from': samples_to_skip
@@ -413,6 +462,22 @@ def chunk_subset(
                 
                 if not isinstance(input_ids, np.ndarray):
                     input_ids = np.array(input_ids, dtype=np.uint16)
+                
+                if len(input_ids) < min_sample_token_size:
+                    stats['total_samples_skipped_by_length'] += 1
+                    samples_processed_count += 1
+                    
+                    if pbar:
+                        pbar.update(1)
+                    
+                    if samples_processed_count % 500 == 0:
+                        save_resume_state(
+                            output_path,
+                            samples_to_skip + samples_processed_count,
+                            total_samples_in_subset
+                        )
+                    
+                    continue  
                 
                 chunks, duplicated, skipped = chunk_instance(
                     tokens=input_ids,
@@ -487,7 +552,8 @@ def chunk_subset(
     clear_resume_state(output_path)
     
     print(f"Chunked {stats['total_input_samples']:,} samples → {stats['total_output_chunks']:,} chunks "
-          f"(duplicated: {stats['total_duplicated_tokens']:,}, skipped: {stats['total_tokens_skipped']:,})")
+          f"(duplicated: {stats['total_duplicated_tokens']:,}, skipped: {stats['total_tokens_skipped']:,}, "
+          f"samples filtered: {stats['total_samples_skipped_by_length']:,})")
     
     return stats
 
@@ -504,7 +570,8 @@ def chunk_subset_worker(args: Tuple) -> Tuple[str, Dict]:
     """
     (subset_path, output_path, tokenizer_path, chunk_size, min_chunk_size,
      always_skip_size, backfill, backfill_no_duplicates, add_eos_token,
-     bos_token, eos_token, batch_size, compression, resume, seed) = args
+     bos_token, eos_token, batch_size, compression, resume, seed, 
+     min_sample_token_size) = args
     
     try:
         tokenizer = AutoTokenizer.from_pretrained(
@@ -532,7 +599,8 @@ def chunk_subset_worker(args: Tuple) -> Tuple[str, Dict]:
             compression=compression,
             resume=resume,
             seed=seed,
-            show_progress=False  # Disable inner progress bar for parallel processing
+            show_progress=False,  # Disable inner progress bar for parallel processing
+            min_sample_token_size=min_sample_token_size
         )
         return (subset_path.name, stats)
     except Exception as e:
@@ -554,7 +622,8 @@ def chunk_dataset(
     resume: bool = False,
     seed: int = 42,
     num_workers: Optional[int] = None,
-    subset_filter: Optional[str] = None
+    subset_filter: Optional[str] = None,
+    min_sample_token_size: int = 0
 ) -> Dict:
     """
     Chunk entire tokenized MDS dataset with subset structure.
@@ -575,6 +644,7 @@ def chunk_dataset(
         seed: Random seed for reproducibility
         num_workers: Number of parallel workers
         subset_filter: Process only this specific subset folder (e.g., 004_00004)
+        min_sample_token_size: Minimum tokens required in sample (samples shorter are skipped)
         
     Returns:
         Overall statistics dictionary
@@ -587,6 +657,7 @@ def chunk_dataset(
     print(f"Chunk size: {chunk_size}")
     print(f"Min chunk size: {min_chunk_size}")
     print(f"Always skip size: {always_skip_size}")
+    print(f"Min sample token size: {min_sample_token_size} (skip samples with fewer tokens)")
     print(f"Backfill: {backfill}")
     print(f"Backfill no duplicates: {backfill_no_duplicates}")
     print(f"Add EOS token: {add_eos_token}")
@@ -604,16 +675,34 @@ def chunk_dataset(
             add_prefix_space=True,
             trust_remote_code=True
         )
-        print(f"Loaded tokenizer")
+        print(f"Loaded tokenizer: {tokenizer.__class__.__name__}")
     
-        bos_token = tokenizer.bos_token_id if hasattr(tokenizer, 'bos_token_id') and tokenizer.bos_token_id is not None else tokenizer.cls_token_id
-        eos_token = tokenizer.eos_token_id if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None else tokenizer.sep_token_id
+        # For BERT-style models, prioritize CLS token as the beginning-of-sequence token
+        # This ensures [CLS] is added at the start of each chunk
+        if hasattr(tokenizer, 'cls_token_id') and tokenizer.cls_token_id is not None:
+            bos_token = tokenizer.cls_token_id
+            bos_token_name = tokenizer.cls_token
+            print(f"Using CLS token as BOS (BERT-style): [{bos_token_name}] (ID: {bos_token})")
+        elif hasattr(tokenizer, 'bos_token_id') and tokenizer.bos_token_id is not None:
+            bos_token = tokenizer.bos_token_id
+            bos_token_name = tokenizer.bos_token
+            print(f"Using BOS token: [{bos_token_name}] (ID: {bos_token})")
+        else:
+            raise ValueError("Tokenizer must have either CLS token or BOS token")
         
-        if bos_token is None:
-            raise ValueError("Tokenizer must have BOS or CLS token")
+        # For EOS token, use SEP for BERT-style or EOS for others
+        if hasattr(tokenizer, 'sep_token_id') and tokenizer.sep_token_id is not None:
+            eos_token = tokenizer.sep_token_id
+            eos_token_name = tokenizer.sep_token
+            print(f"Using SEP token as EOS (BERT-style): [{eos_token_name}] (ID: {eos_token})")
+        elif hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+            eos_token = tokenizer.eos_token_id
+            eos_token_name = tokenizer.eos_token
+            print(f"Using EOS token: [{eos_token_name}] (ID: {eos_token})")
+        else:
+            eos_token = None
+            print("No EOS/SEP token available")
         
-        print(f"BOS token ID: {bos_token}")
-        print(f"EOS token ID: {eos_token}")
         print()
     except Exception as e:
         print(f"Failed to load tokenizer: {e}")
@@ -691,7 +780,8 @@ def chunk_dataset(
             batch_size,
             compression,
             resume,
-            seed
+            seed,
+            min_sample_token_size
         ))
     
     print(f"Processing {len(subset_folders)} subsets with {num_workers} workers...")
@@ -799,6 +889,13 @@ def main():
         help='Always skip chunks smaller than this (default: 128 for 1K, 32 for 8K)'
     )
     parser.add_argument(
+        '--min_sample_token_size',
+        type=int,
+        default=None,
+        help='Minimum tokens required in sample before chunking (default: chunk_size/2). '
+             'Samples shorter than this are skipped entirely to avoid processing very short samples.'
+    )
+    parser.add_argument(
         '--no_backfill',
         action='store_true',
         help='Disable backfill of short chunks'
@@ -895,6 +992,9 @@ def main():
         else:
             args.always_skip_size = 128
     
+    if args.min_sample_token_size is None:
+        args.min_sample_token_size = args.chunk_size // 2
+    
     compression = None if args.compression == 'none' else args.compression
     
     if args.hf_repo:
@@ -914,7 +1014,12 @@ def main():
             parser.error(f"Input directory does not exist: {input_path}")
     
     if args.output_repo:
-        output_path = Path(args.temp_dir) / f"chunked-{args.chunk_size}"
+        if args.hf_repo:
+            dataset_name = args.hf_repo.split('/')[-1]
+        else:
+            dataset_name = Path(args.input_dir).name
+        
+        output_path = Path(args.temp_dir) / f"chunked_{dataset_name}-{args.chunk_size}"
         output_path.mkdir(parents=True, exist_ok=True)
         upload_to_hf_after = True
     else:
@@ -937,7 +1042,8 @@ def main():
             resume=args.resume,
             seed=args.seed,
             num_workers=args.num_workers,
-            subset_filter=args.subset_filter
+            subset_filter=args.subset_filter,
+            min_sample_token_size=args.min_sample_token_size
         )
         
         if upload_to_hf_after:

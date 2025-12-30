@@ -223,7 +223,7 @@ def format_tokenizer(
         
         # Add/update important settings
         config["clean_up_tokenization_spaces"] = True
-        config["model_max_length"] = 4096  # BERT default
+        config["model_max_length"] = 1000000000000000019884624838656  # BERT default
         config["tokenizer_class"] = "PreTrainedTokenizerFast"
         
         with open(config_path, 'w', encoding='utf-8') as f:

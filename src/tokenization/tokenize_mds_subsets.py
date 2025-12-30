@@ -529,7 +529,12 @@ def main():
             parser.error(f"Input directory does not exist: {input_path}")
     
     if args.output_repo:
-        output_path = Path(args.temp_dir) / "tokenized"
+        if args.hf_repo:
+            dataset_name = args.hf_repo.split('/')[-1]
+        else:
+            dataset_name = Path(args.input_dir).name
+        
+        output_path = Path(args.temp_dir) / f"tokenized_{dataset_name}"
         output_path.mkdir(parents=True, exist_ok=True)
         upload_to_hf_after = True
     else:

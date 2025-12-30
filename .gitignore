@@ -181,4 +181,5 @@ temp_chunking/
 temp_sampling/
 # output/
 output/*
-scripts/*
+# scripts/*
+# .agent/*

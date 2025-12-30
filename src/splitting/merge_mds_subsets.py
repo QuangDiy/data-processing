@@ -126,9 +126,12 @@ def decompress_shard_file(source_file: Path, dest_file: Path, compression: str, 
     tmp_file = dest_file.with_suffix(dest_file.suffix + '.tmp')
     with open(tmp_file, 'wb') as f:
         f.write(decompressed_data)
+    
+    if dest_file.exists():
+        dest_file.unlink()
+    
     tmp_file.rename(dest_file)
     
-    # Delete the source compressed file if requested
     if delete_source and source_file.exists():
         source_file.unlink()
         print(f"      Deleted compressed file: {source_file.name}")
